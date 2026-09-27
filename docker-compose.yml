@@ -1,0 +1,12 @@
+services:
+
+  mqtt-broker:
+    image: eclipse-mosquitto:2
+    container_name: iot-mqtt-broker
+
+    ports:
+      - "1883:1883"
+
+    volumes:
+      - ./Broker/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./Broker/acl.conf:/mosquitto/config/acl.conf
