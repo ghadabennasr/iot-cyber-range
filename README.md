@@ -92,7 +92,7 @@ update the address in the ESP32 sketch each session.
 - [x] `mosquitto.conf` written (listener 1883, ACL file referenced)
 - [x] `acl.conf` written (per-device topic restrictions)
 - [x] Mosquitto added to `docker-compose.yml` + tested locally (pub/sub confirmed)
-- [ ] ngrok tunnel set up and externally tested
+- [x] Public tunnel set up (bore.pub) and externally tested with auth/ACLs
 - [ ] First ESP32 (badge-controller) publishing to broker
 - [ ] Remaining 2 ESP32 firmwares
 - [ ] Backend event ingestion
@@ -110,6 +110,20 @@ update the address in the ESP32 sketch each session.
 - [ ] Report written
 
 See `notes.md` for the detailed, dated build log.
+
+## Known technical constraint
+
+Wokwi's simulated ESP32 network is not on the same LAN as our Docker
+containers — it needs a real, reachable broker address. We expose the
+Dockerized Mosquitto broker via bore (https://github.com/ekzhang/bore), an
+open-source TCP tunnel to the public bore.pub relay, so Wokwi firmware can
+connect to it over the internet, entirely free and with no payment
+information required. Note: bore.pub URLs/ports change on every restart —
+update the address in the ESP32 sketch each session. Forwarded traffic is
+not encrypted by default (per bore's own documentation) — acceptable for
+this development/demo context, not intended as production-secure transport.
+The bore.pub free relay has shown intermittent connection instability under
+testing — documented as a known limitation of the free community tunnel.
 
 ## Known issues / tech debt
 

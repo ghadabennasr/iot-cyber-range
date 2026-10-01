@@ -10,3 +10,4 @@ services:
     volumes:
       - ./Broker/mosquitto.conf:/mosquitto/config/mosquitto.conf
       - ./Broker/acl.conf:/mosquitto/config/acl.conf
+      - ./Broker/passwordfile:/mosquitto/config/passwordfile

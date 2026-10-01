@@ -67,7 +67,7 @@ config — see Known Issues.
 
 ---
 
-## 2026-09-27 — Step 3: Mosquitto running in Docker
+## — Step 3: Mosquitto running in Docker
 
 **What was done:**
 - Added a `mosquitto` service to `docker-compose.yml`:
@@ -128,3 +128,54 @@ ESP32 devices can reach it, then write the first ESP32 sketch
 | 5 | Successful Mosquitto broker initialization |
 | 6 | Successful MQTT communication between a device and the backend |
 | 7 | ACL preventing badge1 from publishing to the lock actuator topic |
+
+## — Step 4: Public tunnel via bore.pub (ngrok alternative)
+
+**Context:** ngrok's free tier now requires a credit/debit card to open TCP
+tunnels (ERR_NGROK_8013). Since the project must remain 100% free with no
+payment info, we switched to bore (https://github.com/ekzhang/bore), an
+open-source TCP tunnel client using the public bore.pub relay server.
+
+**What was done:**
+- Downloaded bore v0.6.0 prebuilt Windows binary from the official GitHub
+  releases page, extracted bore.exe
+
+![Figure 8](screenshots/Figure%208%20—%20bore%20tunnel%20running.png)
+*Figure 8 — bore tunnel running, listening at bore.pub:<PORT>*
+
+- Ran `bore local 1883 --to bore.pub` with the Dockerized Mosquitto broker
+  already running; bore assigned a public endpoint at bore.pub:<PORT>
+
+**What was tested:**
+- Confirmed raw MQTT pub/sub across the tunnel (external mosquitto_pub ->
+  bore.pub -> local Dockerized broker -> local mosquitto_sub)
+
+![Figure 9](screenshots/Figure%209%20—%20MQTT%20pub-sub%20through%20bore%20tunnel.png)
+*Figure 9 — successful MQTT communication through the bore tunnel*
+
+- Confirmed existing MQTT authentication works through the tunnel
+  (authenticated client publish succeeded)
+
+![Figure 10](screenshots/Figure%2010%20—%20authenticated%20publish%20through%20bore.png)
+*Figure 10 — authenticated MQTT publish accepted through bore.pub*
+
+- Confirmed ACL restrictions still apply through the tunnel: an
+  unauthorized publish attempt to a restricted topic was correctly
+  rejected, proving the security layer survives tunneling, not just local
+  connections
+
+![Figure 11](screenshots/Figure%2011%20—%20ACL%20block%20through%20bore%20tunnel.png)
+*Figure 11 — ACL correctly blocking an unauthorized publish through the tunnel*
+
+**Important limitation:** bore's documentation states forwarded traffic is
+NOT encrypted by default (the shared secret, if used, only protects the
+initial handshake). This tunnel is being used strictly as a development/
+university demo mechanism to let Wokwi's cloud-simulated ESP32 reach our
+local broker, not as production-secure MQTT transport. This limitation is
+documented here for the report's security assessment section.
+
+**Known caveat:** bore.pub assigns a random port each restart (same as
+ngrok/serveo free tiers) — must be updated in the Wokwi sketch each session.
+
+**Next:** write the first ESP32 (badge-controller) sketch in Wokwi, using
+the bore.pub:<PORT> address as the MQTT broker host.
