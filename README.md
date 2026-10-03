@@ -33,17 +33,18 @@ logging → alert → investigation → optional response.
 
 ## Architecture
 
-[Attacker container] --> [MQTT Broker (Mosquitto, Docker, tunneled via ngrok)]
-^ ^ ^
-[ESP32 #1] [ESP32 #2] [ESP32 #3] (Wokwi)
-|
-v
-[Backend (MQTT subscriber + API)]
-| | |
-[Database] [Detection/IDS] [Honeypot]
-|
-[Dashboard]
-
+```
+[Attacker container] --> [MQTT Broker (Mosquitto, Docker, tunneled via bore.pub)]
+                              ^            ^            ^
+                        [ESP32 #1]   [ESP32 #2]   [ESP32 #3]   (Wokwi)
+                              |
+                              v
+                 [Backend (MQTT subscriber + API)]
+                    |           |           |
+               [Database]  [Detection/IDS] [Honeypot]
+                    |
+               [Dashboard]
+```
 
 ## Components
 
@@ -58,6 +59,7 @@ v
 
 - ESP32 simulation: Wokwi
 - MQTT broker: Eclipse Mosquitto (Dockerized)
+- Public tunnel: bore (bore.pub relay)
 - Backend: Python (FastAPI) or Node.js
 - Database: PostgreSQL
 - Detection: custom rule-based microservice
@@ -70,9 +72,20 @@ v
 
 Wokwi's simulated ESP32 network is not on the same LAN as our Docker
 containers — it needs a real, reachable broker address. We expose the
-Dockerized Mosquitto broker via an ngrok TCP tunnel so Wokwi firmware can
-connect to it over the internet. Free ngrok URLs change on every restart —
-update the address in the ESP32 sketch each session.
+Dockerized Mosquitto broker via [bore](https://github.com/ekzhang/bore), an
+open-source TCP tunnel to the public `bore.pub` relay, so Wokwi firmware can
+connect to it over the internet, entirely free and with no payment
+information required (ngrok was dropped because its free tier now requires a
+card for TCP tunnels).
+
+- `bore.pub` assigns a new random port on every restart — update the broker
+  port in the ESP32 sketches each session.
+- Forwarded traffic is **not encrypted** by default (per bore's own
+  documentation). Acceptable for this development/demo context, not intended
+  as production-secure transport.
+- The free `bore.pub` relay has shown intermittent connection instability
+  under testing — documented as a known limitation. Firmware therefore
+  reconnects automatically.
 
 ## Setup
 
@@ -80,10 +93,10 @@ update the address in the ESP32 sketch each session.
 2. `broker/mosquitto.conf` configures the listener (port 1883) and points to
    `broker/acl.conf` for per-device topic permissions
 3. Run `docker compose up` to start the Mosquitto broker
-4. Run `ngrok tcp 1883` to expose the broker publicly; note the forwarding
-   address it prints
-5. Open the relevant project in `esp32/` on Wokwi and set the ngrok
-   address/port as the MQTT broker host in the sketch
+4. Run `bore local 1883 --to bore.pub`; note the public port it prints
+   (`bore.pub:<PORT>`)
+5. Open the relevant project in `esp32/` on Wokwi and set `bore.pub` and
+   `<PORT>` as the MQTT broker host/port in the sketch
 6. (Backend/dashboard setup — to be added)
 
 ## Status
@@ -92,9 +105,10 @@ update the address in the ESP32 sketch each session.
 - [x] `mosquitto.conf` written (listener 1883, ACL file referenced)
 - [x] `acl.conf` written (per-device topic restrictions)
 - [x] Mosquitto added to `docker-compose.yml` + tested locally (pub/sub confirmed)
+- [x] ACL topic-level enforcement validated (locally and through the tunnel)
 - [x] Public tunnel set up (bore.pub) and externally tested with auth/ACLs
-- [ ] First ESP32 (badge-controller) publishing to broker
-- [ ] Remaining 2 ESP32 firmwares
+- [ ] First ESP32 (badge-controller) publishing to broker — *in progress (teammate)*
+- [ ] Remaining 2 ESP32 firmwares — *motion-sensor: sketch written, pending Wokwi test; lock-actuator: not started*
 - [ ] Backend event ingestion
 - [ ] Attacker container + first attack scenario (recon)
 - [ ] Detection rule #1 (recon)
@@ -104,35 +118,27 @@ update the address in the ESP32 sketch each session.
 - [ ] Lateral-movement correlation (honeypot -> broker)
 - [ ] Basic dashboard (live event feed + alerts list)
 - [ ] Response action (block/isolate source)
-- [ ] Replace allow_anonymous with real auth
+- [ ] Replace `allow_anonymous true` with mandatory per-client auth
 - [ ] End-to-end integration test
 - [ ] Demo rehearsal
 - [ ] Report written
 
 See `notes.md` for the detailed, dated build log.
 
-## Known technical constraint
-
-Wokwi's simulated ESP32 network is not on the same LAN as our Docker
-containers — it needs a real, reachable broker address. We expose the
-Dockerized Mosquitto broker via bore (https://github.com/ekzhang/bore), an
-open-source TCP tunnel to the public bore.pub relay, so Wokwi firmware can
-connect to it over the internet, entirely free and with no payment
-information required. Note: bore.pub URLs/ports change on every restart —
-update the address in the ESP32 sketch each session. Forwarded traffic is
-not encrypted by default (per bore's own documentation) — acceptable for
-this development/demo context, not intended as production-secure transport.
-The bore.pub free relay has shown intermittent connection instability under
-testing — documented as a known limitation of the free community tunnel.
-
 ## Known issues / tech debt
 
-- `allow_anonymous true` is currently set in `mosquitto.conf` for
-  development — must be replaced with real per-client authentication
-  (username/password or client certs) before the final demo, or explicitly
-  justified in the report as a documented development-mode limitation.
-- ACL rules are written but not yet enforceable/testable without real
-  client authentication.
+- `allow_anonymous true` is still set in `mosquitto.conf` for development.
+  Authenticated clients work (verified through the tunnel), but anonymous
+  clients are still accepted. It must be replaced with mandatory per-client
+  authentication (username/password or client certs) before the final demo,
+  or explicitly justified in the report as a documented development-mode
+  limitation.
+- ACLs are validated at topic level (a client was blocked from publishing to
+  `facility/lock3/cmd`, locally and through the tunnel). Still to confirm:
+  that rules are keyed on the **authenticated username** (not just the
+  client ID, which can be spoofed), and that anonymous clients cannot bypass
+  them once auth is enforced.
+- Tunnel traffic is unencrypted (see Known technical constraint).
 
 ## Team
 
