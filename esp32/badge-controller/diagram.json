@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "author": "Ben nasr Ghada",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": -67.2, "left": -263.96, "attrs": {} },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": 102.2,
+      "left": -412.8,
+      "attrs": { "color": "green", "xray": "1" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led1",
+      "top": -99.6,
+      "left": -437.8,
+      "attrs": { "color": "red" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:4", "btn1:2.r", "green", [ "h0" ] ],
+    [ "btn1:1.r", "esp:GND.1", "green", [ "v0" ] ],
+    [ "esp:2", "led1:A", "green", [ "h0" ] ],
+    [ "esp:GND.3", "led1:C", "black", [ "h0" ] ]
+  ],
+  "dependencies": {}
+}
