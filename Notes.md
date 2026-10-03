@@ -254,4 +254,4 @@ backend MQTT event ingestion.
 | 13 | PubSubClient library added |
 | 14 | Successful Wokwi MQTT connection |
 | 15 | MQTT subscriber connection through bore |
-| 16 | Final end-to-end test: Badge detected! (Wokwi) → facility/badge1/access (subscriber) |v
+| 16 | Final end-to-end test: Badge detected! (Wokwi) → facility/badge1/access (subscriber) |

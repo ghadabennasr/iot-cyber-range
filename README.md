@@ -48,7 +48,7 @@ v
 [Dashboard]
 
 
-## Components (actual current repo structure)
+## Components
 
 - **esp32/** — Wokwi projects, one folder per device
   - `badge-controller/` — **completed**: push button (GPIO4) simulates a
@@ -138,6 +138,13 @@ events, nothing more.
 
 See `Notes.md` for the detailed, dated build log.
 
+## Team
+
+- **Arij** — Device & Data lead: ESP32 firmware, MQTT topic
+  design/ACLs, backend event ingestion, database schema, recon +
+  command-injection detection rules
+- **Ghada** — Attack & Defense lead: attacker scripts, honeypot,
+  spoofing + lateral-movement detection rules, dashboard/alerting UI
 
 ## Timeline (6 weeks)
 
