@@ -1,2 +1,3 @@
 Broker/passwordfile
 Broker/passwordfile.*
+!Broker/passwordfile.example
