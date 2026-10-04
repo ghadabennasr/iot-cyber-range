@@ -138,13 +138,44 @@ events, nothing more.
 
 See `Notes.md` for the detailed, dated build log.
 
-## Team
 
-- **Arij** — Device & Data lead: ESP32 firmware, MQTT topic
-  design/ACLs, backend event ingestion, database schema, recon +
-  command-injection detection rules
-- **Ghada** — Attack & Defense lead: attacker scripts, honeypot,
-  spoofing + lateral-movement detection rules, dashboard/alerting UI
+## Team / Work Distribution
+
+**Ghada — Infrastructure & Cybersecurity Lead**
+
+Already completed (core project infrastructure):
+- Designed the overall IoT Cyber Range architecture
+- Created the repository structure
+- Wrote `Broker/mosquitto.conf` (MQTT listener on port 1883, ACL and
+  password file references)
+- Wrote `Broker/acl.conf` with per-device MQTT topic restrictions
+- Added Mosquitto to `docker-compose.yml` and tested local MQTT pub/sub
+  communication
+- Implemented real MQTT authentication with `passwordfile` and disabled
+  anonymous access (`allow_anonymous false`)
+- Set up the public Bore TCP tunnel and externally tested MQTT
+  communication through it with authentication and ACLs
+- Built the first ESP32, `badge-controller`, and verified end-to-end MQTT
+  publishing through Bore
+
+Remaining work:
+- Attacker environment/scripts: reconnaissance, command-injection, sensor
+  spoofing, and lateral-movement scenarios
+- Honeypot
+- Detection rules
+- Dashboard and alerting
+- Response/blocking mechanisms
+- Attack/defense testing and final security integration
+
+**Arij — IoT Device & Data Lead**
+
+- Implement the remaining two ESP32 firmwares (`motion-sensor`,
+  `lock-actuator`) and their MQTT integration
+- Device-side testing and integration
+- Backend MQTT event ingestion, database schema, and event
+  storage/processing
+- Integration of all three ESP32 devices with the backend
+
 
 ## Timeline (6 weeks)
 
