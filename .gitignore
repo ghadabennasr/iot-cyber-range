@@ -11,3 +11,6 @@ esp32/**/include/secrets.h
 esp32/**/.pio/
 Lab/runtime/
 .env
+__pycache__/
+.pytest_cache/
+.venv/

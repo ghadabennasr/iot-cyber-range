@@ -55,7 +55,7 @@ services:
     depends_on:
       - security-monitor
     ports:
-      - "127.0.0.1:${DASHBOARD_PORT:-8080}:8080"
+      - "127.0.0.1:8080:8080"
     read_only: true
     tmpfs:
       - /var/cache/nginx
@@ -64,6 +64,55 @@ services:
       - ./Lab/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - cyberrange
+      - host-access
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cyberrange
+      POSTGRES_USER: cyberrange
+      # Set in .env (git-ignored). Postgres refuses to start with an empty password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyberrange -d cyberrange"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - backend-db
+
+  backend:
+    build:
+      context: ./Backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mqtt-broker:
+        condition: service_started
+    environment:
+      MQTT_HOST: mqtt-broker
+      # Read-only broker account (ACL: read facility/#). Empty = ingestion disabled.
+      BACKEND_MQTT_USER: backend
+      BACKEND_MQTT_PASSWORD: ${BACKEND_MQTT_PASSWORD:-}
+      # The only account allowed to write facility/lock1/cmd. Empty = no lock commands.
+      CONTROLLER_MQTT_USER: controller
+      CONTROLLER_MQTT_PASSWORD: ${CONTROLLER_MQTT_PASSWORD:-}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      # Bearer token for POST endpoints. Empty = write endpoints disabled (fails closed).
+      API_TOKEN: ${API_TOKEN:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - cyberrange
+      - backend-db
       - host-access
 
   attacker:
@@ -81,9 +130,13 @@ networks:
   cyberrange:
     internal: true
   host-access:
+  # Database network: only postgres and the backend are attached to it.
+  backend-db:
+    internal: true
 
 volumes:
   broker-logs:
+  postgres-data:
 
 secrets:
   ids_password:

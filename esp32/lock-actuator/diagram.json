@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "author": "Arij Gharsalli",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": -67.2, "left": -263.96, "attrs": {} },
+    {
+      "type": "wokwi-led",
+      "id": "ledLocked",
+      "top": -99.6,
+      "left": -437.8,
+      "attrs": { "color": "red", "label": "LOCKED" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "ledUnlocked",
+      "top": -42,
+      "left": -437.8,
+      "attrs": { "color": "green", "label": "UNLOCKED" }
+    },
+    {
+      "type": "wokwi-buzzer",
+      "id": "bz1",
+      "top": 40.8,
+      "left": -420.6,
+      "attrs": { "volume": "0.1" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:25", "ledLocked:A", "red", [] ],
+    [ "esp:GND.1", "ledLocked:C", "black", [] ],
+    [ "esp:26", "ledUnlocked:A", "green", [] ],
+    [ "esp:GND.1", "ledUnlocked:C", "black", [] ],
+    [ "esp:27", "bz1:2", "orange", [] ],
+    [ "esp:GND.1", "bz1:1", "black", [] ]
+  ],
+  "dependencies": {}
+}
