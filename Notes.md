@@ -304,8 +304,7 @@ Tested with `mosquitto_pub` / `mosquitto_sub` through `docker exec`:
 ## Step 9: Security lab — attacker, honeypot, detection, dashboard, response
 
 **What was done:**
-The lab was implemented with GitHub Copilot, which also wrote
-`IMPLEMENTATION-REPORT.txt`. According to that report and the repo contents:
+ The lab includes the following components and attack scenarios:
 - `docker-compose.yml` runs `mqtt-broker`, `honeypot`, `security-monitor`,
   `dashboard-proxy` (nginx) and an on-demand `attacker` container (`tools`
   profile). The lab network is Docker-internal; the broker and dashboard are
