@@ -3,11 +3,88 @@ services:
   mqtt-broker:
     image: eclipse-mosquitto:2
     container_name: iot-mqtt-broker
+    restart: unless-stopped
 
     ports:
-      - "1883:1883"
+      - "127.0.0.1:1883:1883"
 
     volumes:
       - ./Broker/mosquitto.conf:/mosquitto/config/mosquitto.conf
       - ./Broker/acl.conf:/mosquitto/config/acl.conf
       - ./Broker/passwordfile:/mosquitto/config/passwordfile
+      - broker-logs:/mosquitto/log
+
+    networks:
+      - cyberrange
+      - host-access
+
+  honeypot:
+    build:
+      context: ./Lab
+    command: ["python", "/app/honeypot.py"]
+    restart: unless-stopped
+    volumes:
+      - ./Lab/runtime:/events
+    networks:
+      - cyberrange
+
+  security-monitor:
+    build:
+      context: ./Lab
+    command: ["python", "/app/monitor.py"]
+    restart: unless-stopped
+    depends_on:
+      - mqtt-broker
+      - honeypot
+    secrets:
+      - ids_password
+    environment:
+      # Set in .env (git-ignored). Empty = the block button is disabled (fails closed).
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+    volumes:
+      - ./Lab/runtime:/events
+      - broker-logs:/mosquitto/log:ro
+    networks:
+      - cyberrange
+
+  dashboard-proxy:
+    image: nginx:alpine
+    restart: unless-stopped
+    entrypoint: ["nginx"]
+    command: ["-g", "daemon off;"]
+    depends_on:
+      - security-monitor
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+    volumes:
+      - ./Lab/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - cyberrange
+      - host-access
+
+  attacker:
+    build:
+      context: ./Attacker
+    profiles: ["tools"]
+    entrypoint: ["python", "/app/attacker.py"]
+    environment:
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+    networks:
+      - cyberrange
+
+networks:
+  cyberrange:
+    internal: true
+  host-access:
+
+volumes:
+  broker-logs:
+
+secrets:
+  ids_password:
+    file: ./Broker/ids.password

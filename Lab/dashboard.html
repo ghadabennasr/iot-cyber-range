@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IoT Cyber Range · Security Monitor</title>
+  <style>
+    :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background: #101820; color: #e8eef2; }
+    body { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    h1, h2 { color: #8ee3bb; } header, section { margin-bottom: 1.5rem; }
+    .panel { background: #192630; border: 1px solid #344854; border-radius: 8px; padding: 1rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: .55rem; border-bottom: 1px solid #344854; vertical-align: top; }
+    td { overflow-wrap: anywhere; } .severity-critical, .severity-high { color: #ff8b80; }
+    .severity-medium { color: #ffd166; } .severity-low { color: #9fb3c0; } .severity-info { color: #8ee3bb; }
+    select, button, input { background: #101820; color: inherit; border: 1px solid #607784; border-radius: 4px; padding: .5rem; }
+    button { cursor: pointer; } #status { min-height: 1.5em; color: #8ee3bb; }
+    @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>IoT Cyber Range · Security Monitor</h1>
+    <p>Lab-only MQTT events, honeypot activity and detection alerts. This view is separate from the teammate-owned application backend.</p>
+  </header>
+  <section class="panel">
+    <h2>Response</h2>
+    <p>Request a local MQTT account block. It takes effect only when the host-side response watcher is running.</p>
+    <select id="username">
+      <option>badge1</option><option>motion1</option><option>lock1</option>
+      <option>controller</option><option>backend</option><option>canary</option>
+    </select>
+    <input id="token" type="password" placeholder="Dashboard token" autocomplete="off">
+    <button id="block">Queue block</button>
+    <span id="status" role="status"></span>
+  </section>
+  <div class="grid">
+    <section class="panel"><h2>Alerts</h2><table><thead><tr><th>Time</th><th>Severity</th><th>Rule</th><th>Details</th></tr></thead><tbody id="alerts"></tbody></table></section>
+    <section class="panel"><h2>Recent events</h2><table><thead><tr><th>Time</th><th>Type</th><th>Source</th><th>Details</th></tr></thead><tbody id="events"></tbody></table></section>
+  </div>
+  <script>
+    const text = value => String(value ?? "");
+    function cell(row, value, className) {
+      const node = document.createElement("td");
+      node.textContent = text(value);
+      if (className) node.className = className;
+      row.append(node);
+    }
+    function render(target, items, alertMode) {
+      const body = document.getElementById(target);
+      body.replaceChildren();
+      for (const item of items) {
+        const row = document.createElement("tr");
+        cell(row, item.timestamp);
+        if (alertMode) {
+          cell(row, item.severity, `severity-${item.severity}`);
+          cell(row, item.rule);
+          cell(row, item.summary);
+        } else {
+          cell(row, item.event_type);
+          cell(row, item.source);
+          cell(row, JSON.stringify(item.details));
+        }
+        body.append(row);
+      }
+    }
+    async function refresh() {
+      try {
+        const [alerts, events] = await Promise.all([
+          fetch("/api/alerts?limit=50").then(response => response.json()),
+          fetch("/api/events?limit=50").then(response => response.json())
+        ]);
+        render("alerts", alerts, true);
+        render("events", events, false);
+      } catch {
+        document.getElementById("status").textContent = "Dashboard API unavailable.";
+      }
+    }
+    document.getElementById("block").addEventListener("click", async () => {
+      const status = document.getElementById("status");
+      try {
+        sessionStorage.setItem("dashboardToken", document.getElementById("token").value);
+        const response = await fetch("/api/respond", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + document.getElementById("token").value
+          },
+          body: JSON.stringify({
+            username: document.getElementById("username").value,
+            reason: "Dashboard response request"
+          })
+        });
+        const result = await response.json();
+        status.textContent = response.ok
+          ? `Queued ${result.request.username}; host watcher must apply and restart the broker.`
+          : result.error;
+      } catch {
+        status.textContent = "Could not queue the response request.";
+      }
+      refresh();
+    });
+    document.getElementById("token").value = sessionStorage.getItem("dashboardToken") || "";
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
