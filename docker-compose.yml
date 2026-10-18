@@ -106,7 +106,7 @@ services:
       # Bearer token for POST endpoints. Empty = write endpoints disabled (fails closed).
       API_TOKEN: ${API_TOKEN:-}
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8081:8000"
     read_only: true
     security_opt:
       - no-new-privileges:true
