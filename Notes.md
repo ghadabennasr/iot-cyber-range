@@ -63,6 +63,10 @@ Wrote `Broker/acl.conf` defining per-device permissions:
 confidence at this point, since `allow_anonymous true` was still active in
 the broker config — see Known Issues (now resolved, see Step 4 cont. below).
 
+**Later change:** the topic names in this step were revised once the lab was
+built — the motion sensor uses `facility/motion1/#` and the lock uses
+`facility/lock1/cmd` (see Step 7).
+
 **Next:** add Mosquitto as a service in `docker-compose.yml` and test it.
 
 ---
@@ -95,6 +99,9 @@ the broker config — see Known Issues (now resolved, see Step 4 cont. below).
 
 ![Figure 7](screenshots/Figure%207%20—%20ACL%20preventing%20badge1%20from%20publishing%20to%20the%20lock%20actuator%20topic.png)
 *Figure 7 — ACL preventing badge1 from publishing to the lock actuator topic*
+
+**Later change:** the lock command topic was renamed `facility/lock1/cmd`
+(Step 7); the test above used the earlier name.
 
 **Next:** expose the broker publicly so Wokwi's simulated ESP32 devices can
 reach it, then write the first ESP32 sketch (badge-controller).
@@ -216,8 +223,266 @@ deliberate low-privilege design choice (least-privilege device identity,
 scoped via ACL) rather than a secrecy failure — see README's "Known
 technical constraint" section.
 
-**Next:** build `motion-sensor` and `lock-actuator` ESP32 sketches; begin
-backend MQTT event ingestion.
+**Next:** build the attacker, honeypot, detection, dashboard and response
+layer; `motion-sensor`, `lock-actuator` and the backend are planned
+separately (Arij).
+
+---
+
+## Step 6: Development environment
+
+**What was done:**
+- Installed Docker Desktop with the **WSL 2** backend; verified with
+  `docker run --rm hello-world`.
+- Installed the VS Code extensions PlatformIO IDE, Wokwi Simulator and Docker.
+- Requested a Wokwi licence (F1 → "Wokwi: Request a new License").
+
+**Problems and answers:**
+- *Is the VS Code Docker extension enough?* No. It is only a control panel for
+  containers; it needs a real engine, which on Windows is Docker Desktop.
+- *Simulated ESP32 reaching the broker:* Wokwi's built-in Wi-Fi gives internet
+  access, so the bore tunnel (`bore local 1883 --to bore.pub`) still works.
+  A Wokwi private gateway (`host.wokwi.internal`) would remove the need for bore,
+  but Wokwi's own example indicates it needs a paid Wokwi Club plan (not verified
+  for this account).
+- *bore changes its public port on every restart:* the port in `secrets.h` must
+  be updated and the firmware rebuilt each session.
+
+---
+
+## Step 7: Review of the starting state and broker hardening
+
+**State found:**
+Only the broker, authentication, ACLs, the tunnel and the badge button existed.
+No backend, no database, no motion or lock device, no detection.
+
+**Problems found and how they were handled:**
+
+| # | Problem | Why it mattered | Fix |
+|---|---------|-----------------|-----|
+| 1 | `lock1` could write `facility/lock1/#` but not read its command topic, and nobody could publish commands | "Forged command" meant nothing without a legitimate sender; the lock could not receive commands | `lock1` reads `facility/lock1/cmd`; new `controller` user is the only one allowed to write it |
+| 2 | Topic names differed: README said `zone2` / `lock3`, ACL said `motion1` / `lock1` | Firmware, ACL and rules would disagree | One scheme: `facility/<device>/...` with `badge1`, `motion1`, `lock1` |
+| 3 | Denied publishes are dropped by Mosquitto, so a subscriber never sees them | Recon and forged commands would be invisible to the IDS | Broker log written to a shared volume; the IDS reads the log |
+| 4 | Devices arrive through the bore tunnel, so their source IP is the tunnel host | IP-based detection and blocking is unreliable for devices | Identify by MQTT username / client ID; the attacker runs inside the Docker network |
+| 5 | Open item in this log assumed the ACL is keyed on client ID | Mosquitto keys ACL rules on the **username** | Item closed; the Figure 7 test passed because of the `badge1` username |
+| 6 | Badge payload was plain text (`Badge detected`) | Nothing for rules to inspect, no way to spot replay | JSON payload with `device`, `badge_id`, `seq` (Step 11) |
+
+**What was done:**
+- `Broker/acl.conf`: per-device rules, a `controller` command sender, monitoring
+  users (`backend`, `ids`, `dashboard`) and a `canary` account with no rights.
+- `Broker/mosquitto.conf`: `allow_anonymous false`, password and ACL files,
+  logging to stdout and to `/mosquitto/log/mosquitto.log` (`log_type all`,
+  because denied publishes are logged at debug level, as far as we know).
+- `docker-compose.yml`: broker published on `127.0.0.1:1883` only (bore connects
+  to localhost, the LAN cannot reach the broker); log kept in a named volume
+  shared with the IDS.
+- `Broker/add-user.ps1` / `add-user.sh`: create or update users with
+  `mosquitto_passwd` run through Docker, printing the password.
+- `Broker/passwordfile.example` updated with the new users.
+
+**Known limits:**
+- `log_type all` makes the log grow fast; reset the log volume between runs.
+- Read-denied subscriptions are not visible in the log (Mosquitto checks reads at
+  delivery time), so "unauthorized subscribe" cannot be detected from denials.
+
+---
+
+## Step 8: Smoke tests of the broker
+
+**What was done:**
+Tested with `mosquitto_pub` / `mosquitto_sub` through `docker exec`:
+1. allowed publish by `badge1` on its own topic → received by a `backend` listener,
+2. allowed command by `controller` on `facility/lock1/cmd`,
+3. `badge1` publishing to `facility/lock1/cmd` → denied (nothing delivered),
+4. wrong password and anonymous connection → refused,
+5. checked the broker log for traces of 3 and 4.
+
+**Why:** the IDS depends on those log traces (Problem 3 in Step 7).
+
+---
+
+## Step 9: Security lab — attacker, honeypot, detection, dashboard, response
+
+**What was done:**
+The lab was implemented with GitHub Copilot, which also wrote
+`IMPLEMENTATION-REPORT.txt`. According to that report and the repo contents:
+- `docker-compose.yml` runs `mqtt-broker`, `honeypot`, `security-monitor`,
+  `dashboard-proxy` (nginx) and an on-demand `attacker` container (`tools`
+  profile). The lab network is Docker-internal; the broker and dashboard are
+  published on `127.0.0.1` only.
+- `Attacker/`: container running the scenarios `recon`, `command-injection`,
+  `sensor-spoof` and `lateral-movement` against the lab only.
+- `Lab/honeypot.py`: fake TCP maintenance console on internal port 2323; logs
+  every contact to `Lab/runtime/events.jsonl`; never executes input.
+- `Lab/monitor.py`: IDS and dashboard backend. Reads MQTT `facility/#`, the broker
+  log and the honeypot log; stores events and alerts in SQLite; serves
+  `/api/events`, `/api/alerts`, `/api/respond`.
+- `Lab/dashboard.html` behind an nginx proxy: live event feed, alerts list,
+  block button.
+- `Lab/response.ps1`: host script (`Watch` / `Block` / `Unblock`) that applies
+  queued blocks by adding a deny block for the user to the ACL and restarting
+  the broker.
+- `Lab/run-scenario.ps1`: runs a scenario in the attacker container.
+- Unit tests for the monitor and honeypot; the IDS password is passed as a Docker
+  secret; the attacker sits on an internal Docker network.
+
+**Design notes:**
+- Devices reach the broker through the bore tunnel, so detection identifies
+  clients by MQTT username (resolved through the client ID), not by IP.
+- Restarting the broker to apply a block disconnects every client.
+
+---
+
+## Step 10: Code review of the lab
+
+**What was done:**
+Reviewed the full repo (secrets files were not opened), ran the unit tests (7
+passed at that point) and probed the parsing with realistic input.
+
+| # | Finding | Impact |
+|---|---------|--------|
+| 1 | Mosquitto's denial lines name the **client ID**, not the username; the monitor expected a username and took the source from "the last connection seen". The unit test used an invented log line | Alerts had no username; source could be mislabelled when other clients connect |
+| 2 | Honeypot regex matched `id` / `cat` anywhere (`?id=5`, `/cat/status`); plain honeypot contact raised no alert | False positives and a missed signal |
+| 3 | Log-watcher thread only caught a few exception types and could die silently | Detection could stop while the dashboard looked healthy |
+| 4 | Replay rule: a spoofed `seq` of 999999 made every later real reading a "replay"; a device reboot also caused false alerts | Rule could be poisoned and noisy |
+| 5 | `/api/respond` had no authentication and ignored Content-Type; any web page or the attacker container could queue a block, including on `ids` | Detection could be blinded |
+| 6 | Block is a second `user X` ACL section; only "applied and removed" was tested, not that publishes are denied | Response action unproven |
+| 7 | Wokwi/PlatformIO files at repo root, sketch in `esp32/badge-controller/`, no `diagram.json` next to `wokwi.toml`, no `lib_deps` | Simulation could not be built |
+| 8 | Badge sketch hard-coded the MQTT password and bore port | Secret in source |
+| 9 | This log still listed `zone2` / `lock3` | Stale documentation |
+
+---
+
+## Step 11: Patch applied
+
+**What was done:**
+- **Badge project (#7, #8):** `esp32/badge-controller/` is its own PlatformIO +
+  Wokwi project (`platformio.ini`, `wokwi.toml`, `src/main.cpp`,
+  `include/secrets.example.h`), opened as its own folder in VS Code.
+  Credentials and bore port live in a git-ignored `secrets.h`. Payload is JSON:
+  `{"device":"badge1","badge_id":"B-102","seq":N}`, with a 500 ms button
+  debounce. Non-blocking MQTT reconnect and Wi-Fi reconnect added. Old root
+  PlatformIO files and `sketch.ino` removed.
+- **Denial attribution (#1):** the monitor keeps a `client id → (ip, username)` map
+  from "New client connected" lines and resolves denials through it. Source
+  falls back to the last connection only for anonymous rejections.
+- **New rule `forged-lock-command` (high):** denied publish to `facility/<device>/cmd`.
+- **Honeypot (#2):** command-injection regex now needs a separator or operator
+  (`;whoami`, `|cat`, `&&`, `$(`, backtick); `?id=5` and `/cat/status` are no
+  longer flagged. New low-severity `honeypot-contact` alert for any contact.
+- **Watcher (#3):** catches every exception per line and per pass, and waits for
+  half-written lines.
+- **Replay rule (#4):** keeps a window of recent sequence numbers; a restart is
+  not a replay; a jump of more than 1000 raises `sensor-seq-jump` without
+  poisoning later readings.
+- **API (#5):** `/api/respond` needs `Authorization: Bearer <DASHBOARD_TOKEN>`
+  (set in `.env`) and a JSON Content-Type; it fails closed when no token is set.
+  `ids` and `dashboard` can no longer be blocked from the dashboard or
+  `response.ps1`. The dashboard has a token box.
+- **Tests:** 22 unit tests (19 for the monitor, 3 for the honeypot), including
+  realistic Mosquitto log lines, client attribution when other clients connect
+  in between, partial-line reading and the API's 503 / 401 / 415 / 202 / 400
+  responses. The badge firmware was syntax-checked against stub headers (not a
+  real PlatformIO build).
+- **Repository:** the lab was merged into the main repository through a pull
+  request.
+
+**Detection rules now in `Lab/monitor.py`:** `honeypot-contact`,
+`command-injection-attempt`, `unauthorized-mqtt-activity`, `forged-lock-command`,
+`honeypot-to-broker-correlation`, `sensor-range-anomaly`, `sensor-replay`,
+`sensor-seq-jump`, `response-requested`.
+
+**Status of the firmware:** a PlatformIO build and a Wokwi run of this version
+have not been recorded yet (Figures 12–16 come from the earlier Wokwi-web
+version, which sent plain text).
+
+---
+
+## Step 12: Running the lab locally
+
+**What was done:**
+1. Created the broker accounts with `Broker/add-user.ps1` (passwords kept in the
+   git-ignored `Broker/passwords.txt`).
+2. Created `Broker/ids.password` (the IDS account only) and `.env` with the
+   dashboard token.
+3. Started everything with `docker compose up -d --build`.
+
+**Problems met and how they were handled:**
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `no configuration file provided: not found` | Command run from the wrong folder | Run Docker commands from the repository root (where `docker-compose.yml` is) |
+| `failed to connect to the docker API` while creating users | Docker Desktop was not running | Start Docker Desktop and wait for the engine; check with `docker version` |
+| Container name `/iot-mqtt-broker` already in use | Container left over from the earlier setup in another folder | `docker rm -f iot-mqtt-broker`, then `docker compose up -d` |
+| Dashboard proxy failed: port 8080 not available | Another local service (an Oracle Database listener) already uses 8080 | The dashboard host port is configurable: `DASHBOARD_PORT` in `.env` (default 8080) |
+| `response.ps1` "is not digitally signed" | File came from a downloaded zip and Windows marked it as from the internet | `Unblock-File .\Lab\response.ps1`, or `Get-ChildItem -Recurse -Include *.ps1 \| Unblock-File`; alternative: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` |
+| Old generic alerts ("rejected a connection or topic operation") still listed after the patch | Rows from earlier runs remain in the SQLite DB | Reset: `docker compose down -v`, empty `Lab\runtime\`, `docker compose up -d` (wipes all history) |
+| Question about enabling a VS Code env setting | Not needed: Docker Compose reads `.env` from the repo root by itself | None; `python.terminal.useEnvFile` only matters for VS Code terminals and nothing here uses it |
+| Where to run each command | Mixed repo-root and firmware-folder steps | Rule: PowerShell at the repo root for Docker/scripts; VS Code opened on `esp32/badge-controller/` for firmware |
+
+**Result:** the broker, honeypot, security monitor and dashboard proxy start
+and the dashboard opens on the configured port.
+
+---
+
+## Step 13: Attack scenarios, verification and evidence
+
+**Early manual tests** (a first, hand-run attacker container, before the
+scripted scenarios):
+
+![Attacker container running](screenshots/Attacker_Docker_Container_Running.png)
+*Attacker container and broker running in Docker*
+
+![MQTT port discovery](screenshots/Attacker_Nmap_MQTT_Port_Discovery.png)
+*Reconnaissance: nmap from the attacker container finds `1883/tcp open mqtt`
+on the broker*
+
+![Invalid credentials](screenshots/Attacker_Invalid_MQTT_Credentials_Blocked.png)
+*Wrong password for `badge1`: `Connection Refused: not authorised`*
+
+![Anonymous access](screenshots/Attacker_Unauthorized_MQTT_Access_Blocked.png)
+*Anonymous connection: `Connection Refused: not authorised`*
+
+**Scripted scenarios** (run with
+`Lab/run-scenario.ps1 -Scenario <recon|command-injection|sensor-spoof|lateral-movement>`):
+- `recon`: probes the honeypot, then attempts an anonymous MQTT connection;
+  the broker must reject it.
+- `command-injection`: sends harmless command-like text to the honeypot; it is
+  recorded and never executed.
+- `sensor-spoof`: publishes an out-of-range motion reading with a device
+  account.
+- `lateral-movement`: probes the honeypot, then `badge1` tries to publish to
+  `facility/lock1/cmd`; the ACL must deny it.
+
+**Scenario run (`lateral-movement`) — result:**
+```
+honeypot-to-broker-correlation  critical
+forged-lock-command             high      badge1 tried to publish to facility/lock1/cmd ...
+unauthorized-mqtt-activity      medium    Mosquitto rejected a publish from badge1.
+honeypot-contact                low       172.19.0.6 contacted the simulated maintenance honeypot ...
+```
+All four expected alerts appeared, the username (`badge1`) is resolved, and the
+honeypot contact and the broker denial were correlated by the same source IP. This
+confirmed the assumption about the Mosquitto log format. (Six older alerts with
+the generic wording were leftovers from earlier runs.)
+
+![Dashboard alerts](screenshots/Attacker_Dashboard_Alerts.png)
+*Security-monitor dashboard showing the alerts raised by the scenarios*
+
+**Note:** the early manual tests prove authentication rejection and port
+discovery. A silent drop of a denied publish is not visible in the client
+output; the denial is shown by the broker log and by the dashboard alert.
+
+**Honeypot scope decision (badge controller only):**
+- The honeypot stands for the **badge controller's maintenance console only**.
+  There is no honeypot for the motion sensor or the lock.
+- It does not depend on Arij's work. It is a plain TCP service that writes events
+  to `Lab/runtime/events.jsonl`; it does not use MQTT, the backend or the motion
+  and lock devices. The correlation with the broker uses only the attacker's
+  source IP.
+- In the code it is still labelled generically (`fake-maintenance-console`,
+  "Maintenance console unavailable."). Relabelling it as a badge-controller
+  console is optional and cosmetic.
 
 ---
 
@@ -228,12 +493,42 @@ backend MQTT event ingestion.
       `allow_anonymous false`.
 - [x] ~~ACL rules not yet tested under real client authentication~~ —
       **Resolved**: re-verified ACL rejection under real auth.
-- [ ] Confirm the Figure 7 test used an explicit client ID (`badge1`)
-      rather than relying on IP or another incidental factor, to be sure
-      the ACL is genuinely keyed on client identity.
+- [x] ~~Confirm the Figure 7 test used an explicit client ID (`badge1`)~~ —
+      **Resolved**: Mosquitto ACL `user` rules match the authenticated
+      **username**, not the client ID; the block in Figure 7 applies because
+      the client authenticated as `badge1`.
+- [ ] **Block action not yet verified:** run `response.ps1 -Action Watch`, queue a
+      block for `badge1` from the dashboard, then publish as `badge1`; the broker
+      log must show a new `Denied PUBLISH`. If the publish still passes, the
+      duplicate `user badge1` ACL section is not honoured and the block needs
+      another approach (for example editing the user's existing section, or
+      Mosquitto's dynamic security plugin).
+- [ ] Applying a block restarts the broker and disconnects every client; a reload
+      (SIGHUP) with the `Broker/` folder mounted could avoid that, but is untested.
+- [ ] Check the failed-login line in the real Mosquitto log against the
+      monitor's pattern (`AUTH_FAIL_LINE` in `Lab/monitor.py`), so anonymous
+      recon raises `unauthorized-mqtt-activity`.
+- [ ] **Badge firmware build:** run the PlatformIO build and the Wokwi simulation
+      from `esp32/badge-controller/` and confirm the JSON reaches a `backend`
+      listener.
+- [ ] **Motion and lock firmware:** still empty (Arij). The IDS expects motion
+      payloads with `distance_cm` and `seq`; this must be agreed with her.
+- [ ] **Integration with Arij's backend:** after she finishes, store alerts through
+      her database or add an `alerts/#` MQTT topic; then the full end-to-end test.
+- [ ] **Scenario naming:** the forged lock command is exercised inside
+      `lateral-movement`, while `command-injection` sends text to the honeypot.
+      Decide how the demo and report name them.
+- [ ] **Network layout:** the attacker container can still reach the monitor's HTTP
+      port (now protected by the token); a separate network would be stricter.
+- [ ] Replace the early forged-command screenshot with a `lateral-movement`
+      run that shows the denial in the broker log and the alert.
 - [ ] bore.pub free relay shows intermittent instability — acceptable for
       development, but have a backup (recorded demo run) in case it's
       down during the actual graded presentation.
+- [ ] **Before sharing the project:** rotate the lab passwords and keep bore running
+      only during tests and demos.
+- [ ] **Remaining deliverables:** end-to-end integration test, demo rehearsal, report.
+
 
 ## Screenshots reference
 
@@ -255,243 +550,8 @@ backend MQTT event ingestion.
 | 14 | Successful Wokwi MQTT connection |
 | 15 | MQTT subscriber connection through bore |
 | 16 | Final end-to-end test: Badge detected! (Wokwi) → facility/badge1/access (subscriber) |
-
-
-
-**Scope of this work:** command-injection attack + detection rule #2, honeypot,
-sensor-spoofing + rule #3, lateral-movement correlation, basic dashboard,
-response action, end-to-end test, demo rehearsal, report.
-
-**Ground rules agreed:**
-- Arij keeps the backend ingestion (PostgreSQL) and the motion/lock firmware.
-  Our part is built independently and linked to her backend after she finishes.
-  Our IDS and dashboard therefore read MQTT and the broker log directly.
-- Ghada's badge-controller circuit (`diagram.json`) is reused unchanged.
-- The honeypot covers the **badge controller only** and does not depend on
-  Arij's work (details in Step 9).
-- The project is worked on **locally** and is not pushed to GitHub.
-
----
-
-## Step 1: Review of the starting state
-
-**What was done:**
-Read the README and the first zip (`Notes.md`, `acl.conf`, `mosquitto.conf`,
-`docker-compose.yml`, `passwordfile.example`, `diagram.json`).
-
-**State found:**
-Only the broker, authentication, ACLs, the tunnel and the badge button existed.
-No backend, no database, no motion or lock device, no detection.
-
-**Problems found and how they were handled:**
-
-| # | Problem | Why it mattered | Fix |
-|---|---------|-----------------|-----|
-| 1 | `lock1` could write `facility/lock1/#` but not read its command topic, and nobody could publish commands | "Forged command" meant nothing without a legitimate sender; the lock could not receive commands | `lock1` reads `facility/lock1/cmd`; new `controller` user is the only one allowed to write it |
-| 2 | Topic names differed: README said `zone2` / `lock3`, ACL said `motion1` / `lock1` | Firmware, ACL and rules would disagree | One scheme: `facility/<device>/...` with `badge1`, `motion1`, `lock1` |
-| 3 | Denied publishes are dropped by Mosquitto, so a subscriber never sees them | Recon and forged commands would be invisible to the IDS | Broker log written to a shared volume; the IDS reads the log |
-| 4 | Devices arrive through the bore tunnel, so their source IP is the tunnel host | IP-based detection and blocking is unreliable for devices | Identify by MQTT username / client ID; the attacker runs inside the Docker network |
-| 5 | Open item in `Notes.md` assumed the ACL is keyed on client ID | Mosquitto keys ACL rules on the **username** | Item closed; the Figure 7 test passed because of the `badge1` username |
-| 6 | Badge payload was plain text (`Badge detected`) | Nothing for rules to inspect, no way to spot replay | JSON payload with `device`, `badge_id`, `seq` (Step 7) |
-
----
-
-## Step 2: Broker hardening
-
-**What was done:**
-- `Broker/acl.conf`: per-device rules, a `controller` command sender, monitoring
-  users (`backend`, `ids`, `dashboard`) and a `canary` account with no rights.
-- `Broker/mosquitto.conf`: `allow_anonymous false`, password and ACL files,
-  logging to stdout and to `/mosquitto/log/mosquitto.log` (`log_type all`,
-  because denied publishes are logged at debug level, as far as we know).
-- `docker-compose.yml`: broker published on `127.0.0.1:1883` only (bore connects
-  to localhost, the LAN cannot reach the broker); log kept in a named volume
-  shared with the IDS.
-- `Broker/add-user.ps1` / `add-user.sh`: create or update users with
-  `mosquitto_passwd` run through Docker, printing the password.
-- `Broker/passwordfile.example` updated with the new users.
-
-**Note:** the lab built in Step 5 extends these files (more services, networks,
-secrets).
-
-**Known limits:**
-- `log_type all` makes the log grow fast; reset the log volume between runs.
-- Read-denied subscriptions are not visible in the log (Mosquitto checks reads at
-  delivery time), so "unauthorized subscribe" cannot be detected from denials.
-
----
-
-## Step 3: Development environment
-
-**What was done:**
-- Installed Docker Desktop with the **WSL 2** backend; verified with
-  `docker run --rm hello-world`.
-- Installed the VS Code extensions PlatformIO IDE, Wokwi Simulator and Docker.
-- Requested a Wokwi licence (F1 → "Wokwi: Request a new License").
-
-**Problems and answers:**
-- *Is the VS Code Docker extension enough?* No. It is only a control panel for
-  containers; it needs a real engine, which on Windows is Docker Desktop.
-- *Simulated ESP32 reaching the broker:* Wokwi's built-in Wi-Fi gives internet
-  access, so the bore tunnel (`bore local 1883 --to bore.pub`) still works.
-  A Wokwi private gateway (`host.wokwi.internal`) would remove the need for bore,
-  but Wokwi's own example indicates it needs a paid Wokwi Club plan (not verified
-  for this account).
-- *bore changes its public port on every restart:* the port in `secrets.h` must
-  be updated and the firmware rebuilt each session.
-
----
-
-## Step 4: Smoke tests of the broker
-
-**What was done:**
-Tested with `mosquitto_pub` / `mosquitto_sub` through `docker exec`:
-1. allowed publish by `badge1` on its own topic → received by a `backend` listener,
-2. allowed command by `controller` on `facility/lock1/cmd`,
-3. `badge1` publishing to `facility/lock1/cmd` → denied (nothing delivered),
-4. wrong password and anonymous connection → refused,
-5. checked the broker log for traces of 3 and 4.
-
-**Why:** the IDS depends on those log traces (Problem 3 in Step 1).
-
----
-
-## Step 5: Lab implemented with GitHub Copilot
-
-**What was done:**
-Work continued with Copilot, which wrote `IMPLEMENTATION-REPORT.txt`. According to
-that report and the repo contents:
-- `Attacker/`: container running the scenarios `recon`, `command-injection`,
-  `sensor-spoof` and `lateral-movement` against the lab only.
-- `Lab/honeypot.py`: fake TCP maintenance console on internal port 2323; logs
-  every contact to `Lab/runtime/events.jsonl`; never executes input.
-- `Lab/monitor.py`: IDS and dashboard backend. Reads MQTT `facility/#`, the broker
-  log and the honeypot log; stores events and alerts in SQLite; serves
-  `/api/events`, `/api/alerts`, `/api/respond`.
-- `Lab/dashboard.html` behind an nginx proxy at `http://127.0.0.1:8080`: live
-  event feed, alerts list, block button.
-- `Lab/response.ps1`: host script (`Watch` / `Unblock`) that applies queued blocks
-  by adding a deny block for the user to the ACL and restarting the broker.
-- `Lab/run-scenario.ps1`: runs a scenario in the attacker container.
-- Unit tests for the monitor and honeypot; the IDS password is passed as a Docker
-  secret; the attacker sits on an internal Docker network.
-
----
-
-## Step 6: Code review of the Copilot work
-
-**What was done:**
-Reviewed the full repo (secrets files were not opened), ran the unit tests (7
-passed) and probed the parsing with realistic input.
-
-| # | Finding | Impact |
-|---|---------|--------|
-| 1 | Mosquitto's denial lines name the **client ID**, not the username; the monitor expected a username and took the source from "the last connection seen". The unit test used an invented log line | Alerts had no username; source could be mislabelled when other clients connect |
-| 2 | Honeypot regex matched `id` / `cat` anywhere (`?id=5`, `/cat/status`); plain honeypot contact raised no alert | False positives and a missed signal |
-| 3 | Log-watcher thread only caught a few exception types and could die silently | Detection could stop while the dashboard looked healthy |
-| 4 | Replay rule: a spoofed `seq` of 999999 made every later real reading a "replay"; a device reboot also caused false alerts | Rule could be poisoned and noisy |
-| 5 | `/api/respond` had no authentication and ignored Content-Type; any web page or the attacker container could queue a block, including on `ids` | Detection could be blinded |
-| 6 | Block is a second `user X` ACL section; only "applied and removed" was tested, not that publishes are denied | Response action unproven |
-| 7 | Wokwi/PlatformIO files at repo root, sketch in `esp32/badge-controller/`, no `diagram.json` next to `wokwi.toml`, no `lib_deps` | Simulation could not be built |
-| 8 | Badge sketch hard-coded the MQTT password and bore port | Secret in source |
-| 9 | `Notes.md` still listed `zone2` / `lock3` | Stale documentation |
-
----
-
-## Step 7: Patch applied
-
-**What was done:**
-- **Badge project (#7, #8):** `esp32/badge-controller/` is its own PlatformIO +
-  Wokwi project (`platformio.ini`, `wokwi.toml`, `src/main.cpp`,
-  `include/secrets.example.h`). Credentials and bore port live in a git-ignored
-  `secrets.h`. Payload is JSON: `{"device":"badge1","badge_id":"B-102","seq":N}`.
-  Non-blocking MQTT reconnect and Wi-Fi reconnect added. Old root PlatformIO files
-  and `sketch.ino` removed.
-- **Denial attribution (#1):** the monitor keeps a `client id → (ip, username)` map
-  from "New client connected" lines and resolves denials through it. Source
-  falls back to the last connection only for anonymous rejections.
-- **New rule `forged-lock-command` (high):** denied publish to `facility/<device>/cmd`.
-  This is rule #2 of the task list.
-- **Honeypot (#2):** command-injection regex now needs a separator or operator
-  (`;whoami`, `|cat`, `&&`, `$(`, backtick); `?id=5` and `/cat/status` are no
-  longer flagged. New low-severity `honeypot-contact` alert for any contact.
-- **Watcher (#3):** catches every exception per line and per pass, and waits for
-  half-written lines.
-- **Replay rule (#4):** keeps a window of recent sequence numbers; a restart is
-  not a replay; a jump of more than 1000 raises `sensor-seq-jump` without
-  poisoning later readings.
-- **API (#5):** `/api/respond` needs `Authorization: Bearer <DASHBOARD_TOKEN>`
-  (set in `.env`) and a JSON Content-Type; it fails closed when no token is set.
-  `ids` and `dashboard` can no longer be blocked from the dashboard or
-  `response.ps1`. The dashboard has a token box.
-- **Tests:** 22 unit tests, including realistic Mosquitto log lines, client
-  attribution when other clients connect in between, partial-line reading and the
-  API's 503 / 401 / 415 / 202 / 400 responses. The badge firmware was
-  syntax-checked against stub headers (not a real PlatformIO build).
-
----
-
-## Step 8: Problems met while applying and running the patch
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| `response.ps1` "is not digitally signed" | File came from a downloaded zip and Windows marked it as from the internet | `Unblock-File .\Lab\response.ps1`, or `Get-ChildItem -Recurse -Include *.ps1 \| Unblock-File`; alternative: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` |
-| Old generic alerts ("rejected a connection or topic operation") still listed after the patch | Rows from earlier runs remain in the SQLite DB | Reset: `docker compose down -v`, empty `Lab\runtime\`, `docker compose up -d` (wipes all history) |
-| Question about enabling a VS Code env setting | Not needed: Docker Compose reads `.env` from the repo root by itself | None; `python.terminal.useEnvFile` only matters for VS Code terminals and nothing here uses it |
-| Where to run each command | Mixed repo-root and firmware-folder steps | Rule: PowerShell at the repo root for Docker/scripts; VS Code opened on `esp32/badge-controller/` for firmware |
-
----
-
-## Step 9: Verification
-
-**Scenario run (`lateral-movement`) — result:**
-```
-honeypot-to-broker-correlation  critical
-forged-lock-command             high      badge1 tried to publish to facility/lock1/cmd ...
-unauthorized-mqtt-activity      medium    Mosquitto rejected a publish from badge1.
-honeypot-contact                low       172.19.0.6 contacted the simulated maintenance honeypot ...
-```
-All four expected alerts appeared, the username (`badge1`) is now resolved, and the
-honeypot contact and the broker denial were correlated by the same source IP. This
-confirmed the assumption about the Mosquitto log format. (Six older alerts with
-the generic wording were leftovers from earlier runs.)
-
-**Honeypot scope decision (badge controller only):**
-- The honeypot stands for the **badge controller's maintenance console only**.
-  There is no honeypot for the motion sensor or the lock.
-- It does not depend on Arij's work. It is a plain TCP service that writes events
-  to `Lab/runtime/events.jsonl`; it does not use MQTT, the backend or the motion
-  and lock devices. The correlation with the broker uses only the attacker's
-  source IP.
-- In the code it is still labelled generically (`fake-maintenance-console`,
-  "Maintenance console unavailable."). Relabelling it as a badge-controller
-  console is optional and cosmetic.
-
----
-
-## Open items
-
-- **Block action not yet verified:** run `response.ps1 -Action Watch`, queue a
-  block for `badge1` from the dashboard, then publish as `badge1`; the log must
-  show a new `Denied PUBLISH`. If the publish still passes, the duplicate
-  `user badge1` ACL section is not honoured and the block needs another approach
-  (for example editing the user's existing section, or Mosquitto's dynamic
-  security plugin). Restarting the broker also drops every client; a reload
-  (SIGHUP) with the `Broker/` folder mounted could avoid that, but is untested.
-- **Badge firmware build:** run PlatformIO build and the Wokwi simulation from
-  `esp32/badge-controller/` and confirm the JSON reaches a `backend` listener.
-- **Motion and lock firmware:** still empty (Arij). The IDS expects motion
-  payloads with `distance_cm` and `seq`; this must be agreed with her.
-- **Integration with Arij's backend:** after she finishes, store alerts through
-  her database or add an `alerts/#` MQTT topic.
-- **Scenario naming:** the forged lock command is exercised inside
-  `lateral-movement`, while `command-injection` sends text to the honeypot.
-  Decide how the demo and report name them.
-- **Network layout:** the attacker container can still reach the monitor's HTTP
-  port (now protected by the token); a separate network would be stricter.
-- **Documentation:** update `Notes.md` / README (still mention `zone2` / `lock3`).
-- **Before sharing the project:** rotate the lab passwords and keep bore running
-  only during tests and demos.
-- **Remaining deliverables:** end-to-end integration test, demo rehearsal, report;
-  screenshots of the alert output, `docker compose ps` and the Wokwi run would
-  serve as evidence.
+| Attacker_Docker_Container_Running | Attacker container and broker running in Docker |
+| Attacker_Nmap_MQTT_Port_Discovery | nmap finds the MQTT port from the attacker container |
+| Attacker_Invalid_MQTT_Credentials_Blocked | Wrong password rejected: not authorised |
+| Attacker_Unauthorized_MQTT_Access_Blocked | Anonymous connection rejected: not authorised |
+| Attacker_Dashboard_Alerts | Security-monitor dashboard with alerts from the scenarios |
