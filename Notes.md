@@ -530,16 +530,13 @@ No PlatformIO build, Wokwi run or full end-to-end run (badge -> backend ->
 ---
 
 ## Known issues / tech debt
-- Replace the **Motion and lock firmware** item with:
-  `- [ ] **Motion and lock firmware:** written; run the PlatformIO build and Wokwi simulation for both and record screenshots. Payloads match the IDS (`distance_cm`, `seq`).`
-- Replace the **Integration with Arij's backend** item with:
-  `- [ ] **Backend integration:** store IDS alerts in the backend database (or an `alerts/#` topic), then run the full end-to-end test with the three firmwares.`
-- Add:
-  `- [ ] **Badge replay:** leaked `badge1` credential + valid badge ID unlocks the door; add a replay/`seq` rule and a `badge-replay` scenario.`
-  `- [ ] **Unauthenticated backend reads:** `/api/badges` etc. need a token or a documented exception.`
-  `- [ ] **Range mismatch:** align IDS (1..1000 cm) with backend (2..400 cm).`
-  `- [x] ~~Backend port clash (8081)~~ — **Resolved**: backend API now on 8082.`
 
+- [ ] **Motion and lock firmware:** Run the PlatformIO builds and Wokwi simulations for both devices and record the results.
+- [ ] **Backend integration:** Verify integration between the IDS, backend database, and device firmware.
+- [ ] **Badge replay:** Implement and test replay detection and sequence validation.
+- [ ] **Unauthenticated backend reads:** Review read endpoints and implement appropriate access control.
+- [ ] **Sensor range mismatch:** Align IDS and backend validation ranges.
+- [x] **Backend port conflict:** Resolved; backend API recorded on port 8082.
 
 
 
@@ -567,3 +564,118 @@ No PlatformIO build, Wokwi run or full end-to-end run (badge -> backend ->
 | Attacker_Invalid_MQTT_Credentials_Blocked | Wrong password rejected: not authorised |
 | Attacker_Unauthorized_MQTT_Access_Blocked | Anonymous connection rejected: not authorised |
 | Attacker_Dashboard_Alerts | Security-monitor dashboard with alerts from the scenarios |
+---
+## Initial Pre-Start Inspection — 2026-10-19
+
+This subsection records the initial inspection before the project services were started. These results describe the state at that time, not the later runtime verification.
+
+- `docker compose config --quiet` passed.
+- Six default services were defined in the Compose configuration.
+- `.env` was absent at the time of this inspection; `.env.example` existed and was tracked.
+- `docker compose ps` showed no running services for this project.
+- Some containers were in the `Created` state.
+- The older `iot-merge` project owned container `iot-mqtt-broker` and host port `127.0.0.1:1883`.
+- Ports 8081 and 8082 were not listening at the time of inspection.
+- Seven baseline screenshot files were reported as untracked at the time.
+
+The initial inspection did not confirm successful startup or end-to-end operation. The later baseline section records the subsequent checks.
+
+## Baseline Verification — 2026-10-19
+
+This section records the later runtime and security checks performed on the IoT Cyber Range Docker Compose environment. Results are limited to the specific checks described below; successful endpoint responses do not establish that every security feature works correctly.
+
+### 1. Docker Compose configuration and startup
+
+**Result: PASS**
+
+- `docker compose config --quiet` returned exit code 0.
+- The six default services were started: MQTT broker, PostgreSQL, backend, honeypot, security monitor, and dashboard proxy.
+- PostgreSQL reported a healthy status.
+
+### 2. Backend health and API endpoints
+
+**Result: PASS for the tested checks**
+
+- `GET /health` returned `status: ok`.
+- Database connectivity, MQTT ingestion, and MQTT controller connectivity were reported as `True`.
+- The rate-limit counter was zero.
+- The following read endpoints responded successfully: `/api/devices`, `/api/events`, `/api/badge-events`, `/api/motion`, `/api/lock/state`, `/api/lock/commands`, `/api/badges`, and `/api/stats`.
+
+### 3. Dashboard and security-monitor endpoints
+
+**Result: PASS for endpoint availability**
+
+- `http://127.0.0.1:8081/` returned HTTP 200 with a non-empty HTML response.
+- `/api/events` returned HTTP 200.
+- `/api/alerts` and `/api/responses` returned valid JSON arrays.
+
+These checks establish endpoint availability and response format, not complete detection or response-action functionality.
+
+### 4. API authentication
+
+**Result: PASS for the tested unauthorized requests**
+
+The following requests were rejected with HTTP 401:
+
+- Unauthenticated `POST /api/respond`.
+- `POST /api/lock/command` with an invalid token.
+- `POST /api/badges` with an invalid token.
+- Dashboard-proxied `POST /api/respond` with an invalid token.
+
+### 5. MQTT authentication
+
+**Result: PASS for the tested authentication cases**
+
+- Invalid MQTT credentials were rejected with `Connection Refused: not authorised`.
+- Valid backend credentials received a successful CONNACK and SUBACK when subscribing to an authorized topic.
+- The subscriber timed out while waiting for a message because none was published during the test; this was expected.
+
+### 6. MQTT access control and audit logging
+
+**Result: PASS for the tested denials**
+
+- The backend account's publish attempt to `facility/lock1/command` was denied.
+- The controller's publish attempt to `facility/lock1/auth-test` was denied because the configured controller permission is limited to `facility/lock1/cmd`.
+- The broker audit log contained `Denied PUBLISH` entries for the rejected operations.
+
+**Limitation:** An authorized publish to `facility/lock1/cmd` was not performed because it can trigger simulated lock or alarm actions. The controller ACL rule was inspected, but the authorized command path has not been validated end to end.
+
+### 7. Honeypot availability
+
+**Result: PASS for startup only**
+
+The honeypot log reported:
+
+`Lab honeypot listening on internal TCP port 2323`
+
+This confirms startup and listening status. It does not, by itself, establish that connection handling, event logging, or suspicious-activity detection all work correctly.
+
+### 8. Attack-scenario testing status
+
+The earlier Step 13 lateral-movement scenario **passed its recorded alert checks**. It produced four expected alerts:
+
+- `honeypot-to-broker-correlation` — critical
+- `forged-lock-command` — high
+- `unauthorized-mqtt-activity` — medium
+- `honeypot-contact` — low
+
+The recorded run resolved the username to `badge1` and correlated the honeypot contact with the broker denial by source IP. Six older generic alerts were leftovers from previous runs.
+
+The manual tests also recorded MQTT port discovery, rejection of invalid credentials, and rejection of anonymous access.
+
+**Still pending:** Additional scripted scenario verification, explicit verification of the response action, and the complete device-to-backend-to-lock workflow. Endpoint availability must not be presented as proof that these tests passed.
+
+### 9. Configuration and security observations
+
+- **MQTT encryption:** The broker uses plain TCP without TLS. Credentials and MQTT messages are not encrypted in transit.
+- **Broker file permissions:** Mosquitto logged ownership and permission warnings for `mosquitto.conf`, `acl.conf`, and `passwordfile` under Windows bind mounts.
+- **PostgreSQL authentication:** Initialization logs included a warning about `trust` authentication for local connections. The effective authentication rules need review.
+- **Authorized controller path:** The ACL rule exists, but a safe end-to-end command test remains outstanding.
+
+These items require follow-up; they do not invalidate the individual checks that passed.
+
+### 10. Baseline conclusion
+
+The later checks verified service startup, backend health, dashboard and monitoring endpoint availability, rejection of tested unauthorized API and MQTT requests, MQTT ACL denials, broker audit logging, and honeypot startup.
+
+The lateral-movement scenario and its four expected alerts were already recorded in Step 13. Additional attack scenarios, response-action verification, and the authorized controller command path remain pending. Full end-to-end operation has not yet been recorded as successful.
