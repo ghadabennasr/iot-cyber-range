@@ -485,51 +485,64 @@ output; the denial is shown by the broker log and by the dashboard alert.
 
 ---
 
+## Step 14: Backend, remaining firmwares and review (paste after Step 13)
+
+**What was found in the repo:**
+- `Backend/` (FastAPI + PostgreSQL) now exists: `ingest.py` (pure parsing and
+  validation), `service.py` (rules), `mqtt_service.py` (read-only `backend`
+  client + `controller` command publisher), `db.py`, `schema.sql`, `main.py`
+  (REST API), `tools/simulate_devices.py`, and pytest suites
+  (`test_ingest.py`, `test_service_db.py`).
+- `esp32/motion-sensor/` (HC-SR04, JSON readings, Last Will status) and
+  `esp32/lock-actuator/` (fail-secure lock, siren, retained state) exist with
+  their own `platformio.ini`, `wokwi.toml` and `diagram.json`.
+- `docker-compose.yml` gained `postgres` (on an internal `backend-db` network)
+  and `backend`.
+
+**Backend design notes:**
+- Every `facility/#` message is journaled in `mqtt_events` (valid or not), then
+  projected into `badge_events`, `motion_readings`, `lock_states`.
+- Device identity comes from the **topic** (guarded by the ACL); the `device`
+  field inside the payload is untrusted. A mismatch marks the event `spoofed`.
+- Rules act only on *trusted* events (valid, not retained, not spoofed):
+  authorized badge -> `UNLOCK`; 3 denied scans in 60 s -> `ALARM`.
+- Least privilege: `backend` reads `facility/#`; `controller` is the only
+  account that writes `facility/lock1/cmd`.
+- Write endpoints need `API_TOKEN` and fail closed when it is empty; a
+  per-device rate limit (600/min) drops floods.
+
+**Problems found in review:**
+
+| # | Problem | Impact | Fix / decision |
+|---|---------|--------|----------------|
+| 1 | `dashboard-proxy` and `backend` both published `127.0.0.1:8081` | The second container would fail to start | Dashboard stays on 8081, backend API moved to **8082** |
+| 2 | Backend turns a scan of an authorized badge into `UNLOCK`; the `badge1` credential is meant to be low-privilege and may be public (Wokwi), and `B-102` is in the firmware | Anyone with the credential can open the door; the README claimed it only allows "fake events" | README corrected; to demo as a `badge-replay` scenario and add a detection rule (replay / `seq` check on badges) |
+| 3 | `GET /api/*` (including `/api/badges`) is unauthenticated and reachable from the attacker container | Authorized badge IDs can be listed | Decide: add a read token, or keep it and document it |
+| 4 | IDS range is 1..1000 cm, backend range is 2..400 cm | Two systems disagree on what is anomalous | Align on the HC-SR04 range |
+| 5 | Alerts are in SQLite (security monitor), events in PostgreSQL (backend) | Two stores, two dashboards | Store alerts in the backend DB or publish them on an `alerts/#` topic |
+| 6 | README and Notes still described backend, motion sensor and lock as not started | Stale documentation | README rewritten; this step added |
+
+**Status of the firmware and backend:** code written and unit-tested
+(`test_ingest.py` always; `test_service_db.py` needs `TEST_DATABASE_URL`).
+No PlatformIO build, Wokwi run or full end-to-end run (badge -> backend ->
+`UNLOCK` -> lock state) has been recorded yet.
+
+---
+
 ## Known issues / tech debt
-
-- [x] ~~`allow_anonymous true` insecure, needs real per-client
-      authentication~~ — **Resolved**: replaced with `passwordfile` +
-      `allow_anonymous false`.
-- [x] ~~ACL rules not yet tested under real client authentication~~ —
-      **Resolved**: re-verified ACL rejection under real auth.
-- [x] ~~Confirm the Figure 7 test used an explicit client ID (`badge1`)~~ —
-      **Resolved**: Mosquitto ACL `user` rules match the authenticated
-      **username**, not the client ID; the block in Figure 7 applies because
-      the client authenticated as `badge1`.
-- [ ] **Block action not yet verified:** run `response.ps1 -Action Watch`, queue a
-      block for `badge1` from the dashboard, then publish as `badge1`; the broker
-      log must show a new `Denied PUBLISH`. If the publish still passes, the
-      duplicate `user badge1` ACL section is not honoured and the block needs
-      another approach (for example editing the user's existing section, or
-      Mosquitto's dynamic security plugin).
-- [ ] Applying a block restarts the broker and disconnects every client; a reload
-      (SIGHUP) with the `Broker/` folder mounted could avoid that, but is untested.
-- [ ] Check the failed-login line in the real Mosquitto log against the
-      monitor's pattern (`AUTH_FAIL_LINE` in `Lab/monitor.py`), so anonymous
-      recon raises `unauthorized-mqtt-activity`.
-- [ ] **Badge firmware build:** run the PlatformIO build and the Wokwi simulation
-      from `esp32/badge-controller/` and confirm the JSON reaches a `backend`
-      listener.
-- [ ] **Motion and lock firmware:** still empty (Arij). The IDS expects motion
-      payloads with `distance_cm` and `seq`; this must be agreed with her.
-- [ ] **Integration with Arij's backend:** after she finishes, store alerts through
-      her database or add an `alerts/#` MQTT topic; then the full end-to-end test.
-- [ ] **Scenario naming:** the forged lock command is exercised inside
-      `lateral-movement`, while `command-injection` sends text to the honeypot.
-      Decide how the demo and report name them.
-- [ ] **Network layout:** the attacker container can still reach the monitor's HTTP
-      port (now protected by the token); a separate network would be stricter.
-- [ ] Replace the early forged-command screenshot with a `lateral-movement`
-      run that shows the denial in the broker log and the alert.
-- [ ] bore.pub free relay shows intermittent instability — acceptable for
-      development, but have a backup (recorded demo run) in case it's
-      down during the actual graded presentation.
-- [ ] **Before sharing the project:** rotate the lab passwords and keep bore running
-      only during tests and demos.
-- [ ] **Remaining deliverables:** end-to-end integration test, demo rehearsal, report.
+- Replace the **Motion and lock firmware** item with:
+  `- [ ] **Motion and lock firmware:** written; run the PlatformIO build and Wokwi simulation for both and record screenshots. Payloads match the IDS (`distance_cm`, `seq`).`
+- Replace the **Integration with Arij's backend** item with:
+  `- [ ] **Backend integration:** store IDS alerts in the backend database (or an `alerts/#` topic), then run the full end-to-end test with the three firmwares.`
+- Add:
+  `- [ ] **Badge replay:** leaked `badge1` credential + valid badge ID unlocks the door; add a replay/`seq` rule and a `badge-replay` scenario.`
+  `- [ ] **Unauthenticated backend reads:** `/api/badges` etc. need a token or a documented exception.`
+  `- [ ] **Range mismatch:** align IDS (1..1000 cm) with backend (2..400 cm).`
+  `- [x] ~~Backend port clash (8081)~~ — **Resolved**: backend API now on 8082.`
 
 
-## Screenshots reference
+
+
 
 | Figure | Description |
 |---|---|

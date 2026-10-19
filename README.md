@@ -1,7 +1,8 @@
 # IoT Cyber Range
 
 A virtual IoT security lab: simulated ESP32 devices (Wokwi) representing a
-facility access-control system, communicating over MQTT, with a controlled
+facility access-control system, communicating over MQTT, with an application
+backend (PostgreSQL + REST API) and a controlled
 attack → detection → alert → response pipeline built around Docker Compose.
 
 > **Educational project.** Every attack runs only against the local, simulated
@@ -11,42 +12,58 @@ attack → detection → alert → response pipeline built around Docker Compose
 
 Three IoT devices simulate a small facility access-control system:
 
-- **ESP32 #1 — Badge/RFID controller** (`badge-controller`, completed):
-  publishes access events to `facility/badge1/access`
-- **ESP32 #2 — Motion sensor** (`motion-sensor`, planned): publishes readings
-  under `facility/motion1/`
-- **ESP32 #3 — Lock/siren actuator** (`lock-actuator`, planned): subscribes
-  to commands on `facility/lock1/cmd` to lock/unlock or trigger an alarm
+- **ESP32 #1 — Badge/RFID controller** (`badge-controller`): publishes access
+  events to `facility/badge1/access`
+- **ESP32 #2 — Motion sensor** (`motion-sensor`): HC-SR04 ultrasonic sensor
+  publishing readings to `facility/motion1/reading` and presence to
+  `facility/motion1/status`
+- **ESP32 #3 — Lock/siren actuator** (`lock-actuator`): subscribes to commands
+  on `facility/lock1/cmd`, publishes its state to `facility/lock1/state`;
+  fail-secure (boots locked, auto re-lock, alarm timeout)
 
 All devices communicate over MQTT through a Dockerized Mosquitto broker.
 
-The security layer provides a controlled **attacker** environment, a
-non-executing **honeypot**, a rule-based **detection** service, local event
-storage and a live **dashboard**. An operator can request a broker-account
-block; applying it updates the local ACL and restarts the broker.
+The **application backend** (`Backend/`, FastAPI + PostgreSQL) ingests every
+`facility/#` message, validates and journals it, decides on badge scans
+(authorized badge → `UNLOCK`, repeated denials → `ALARM`) and exposes a REST API.
 
-Full pipeline: IoT devices → attack → monitoring → detection → logging →
-alert → investigation → optional response.
+The **security layer** provides a controlled attacker environment, a
+non-executing honeypot, a rule-based detection service, local event storage and
+a live dashboard. An operator can request a broker-account block; applying it
+updates the local ACL and restarts the broker.
+
+Full pipeline: IoT devices → backend → attack → monitoring → detection →
+logging → alert → investigation → optional response.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     subgraph SIM["Wokwi simulation"]
-        BADGE["ESP32 badge controller<br/>PlatformIO firmware"]
+        BADGE["ESP32 badge controller"]
+        MOTION["ESP32 motion sensor"]
+        LOCK["ESP32 lock actuator"]
     end
     TUN["bore.pub TCP tunnel"]
     subgraph LAB["Docker Compose lab - internal network"]
         BROKER["Mosquitto 2 broker<br/>auth + ACL + audit log"]
+        BACKEND["Backend (FastAPI)<br/>ingest, rules, REST API :8082"]
+        PG[("PostgreSQL")]
         HONEY["Honeypot<br/>fake maintenance console :2323"]
         ATTACKER["Attacker container<br/>4 scripted scenarios"]
         IDS["Security monitor<br/>Python rules, SQLite, REST API"]
-        PROXY["nginx proxy<br/>127.0.0.1:8080"]
+        PROXY["nginx proxy<br/>127.0.0.1:8081"]
     end
     DASH["Web dashboard<br/>live events and alerts"]
     WATCHER["Response watcher<br/>PowerShell on the host"]
 
-    BADGE -->|"MQTT + credentials"| TUN --> BROKER
+    BADGE -->|"MQTT + credentials"| TUN
+    MOTION --> TUN
+    LOCK <--> TUN
+    TUN --> BROKER
+    BROKER -->|"facility/# (read-only)"| BACKEND
+    BACKEND -->|"lock commands (controller account)"| BROKER
+    BACKEND --> PG
     ATTACKER --> BROKER
     ATTACKER --> HONEY
     BROKER -->|"facility/# messages"| IDS
@@ -58,10 +75,9 @@ flowchart LR
     WATCHER -->|"ACL deny block + broker restart"| BROKER
 ```
 
-The motion sensor and lock actuator are planned and will follow the same
-pattern as the badge controller: publish to `facility/<device>/...` with their
-own credentials. The lock receives commands on `facility/lock1/cmd`, which only
-the `controller` account may write.
+Two broker accounts keep least privilege on the backend side: `backend` can only
+**read** `facility/#`, and `controller` is the only account allowed to **write**
+`facility/lock1/cmd`.
 
 ### Attack-to-response walkthrough
 
@@ -92,24 +108,54 @@ sequenceDiagram
 
 ## Components
 
-- **esp32/** — one folder per device
-  - `badge-controller/` — **completed**: PlatformIO + Wokwi project; push
-    button (GPIO4) simulates a badge scan, red LED (GPIO2), PubSubClient
-    library, publishes JSON (`device`, `badge_id`, `seq`) to
-    `facility/badge1/access`; credentials are kept in the git-ignored
-    `include/secrets.h`
-  - `motion-sensor/`, `lock-actuator/` — **not started yet**
+- **esp32/** — one folder per device, each its own PlatformIO + Wokwi project
+  (open that folder in VS Code, not the repo root; credentials live in the
+  git-ignored `include/secrets.h`)
+  - `badge-controller/` — push button (GPIO4) simulates a badge scan, red LED
+    (GPIO2); publishes JSON (`device`, `badge_id`, `seq`)
+  - `motion-sensor/` — HC-SR04 (TRIG GPIO26, ECHO GPIO27), LED GPIO2;
+    publishes JSON (`device`, `motion`, `distance_cm`, `seq`), Last Will status
+  - `lock-actuator/` — red/green LEDs (GPIO25/26) and buzzer (GPIO27); commands
+    `LOCK`, `UNLOCK`, `ALARM`, `ALARM_OFF`; retained state with Last Will
 - **Broker/** — `mosquitto.conf`, `acl.conf`, user-management scripts
   (`add-user.ps1`, `add-user.sh`), `passwordfile.example`
-- **Backend/** — MQTT subscriber + API (**not started yet**)
+- **Backend/** — FastAPI app: MQTT ingestion (`ingest.py`, `service.py`,
+  `mqtt_service.py`), PostgreSQL storage (`db.py`, `schema.sql`), REST API
+  (`main.py`), `tools/simulate_devices.py` to play the three devices without
+  Wokwi, pytest suite
 - **Lab/** — honeypot, IDS/detection engine, local dashboard, response script,
   unit tests
 - **Attacker/** — on-demand, lab-only MQTT and honeypot exercises
 - **screenshots/** — evidence figures referenced in `Notes.md`
-- **docker-compose.yml** — orchestrates the broker, honeypot, security monitor,
-  dashboard proxy and the optional attacker container; the application backend
-  remains separate
-- **.env.example** — template for the dashboard token
+- **docker-compose.yml** — orchestrates broker, honeypot, security monitor,
+  dashboard proxy, PostgreSQL, backend and the optional attacker container
+- **.env.example** — template for the dashboard token, database password,
+  backend broker passwords and API token
+
+### Ports (host, loopback only)
+
+| Port | Service |
+|------|---------|
+| 1883 | Mosquitto broker (bore connects here) |
+| 8081 | Security dashboard (nginx → security monitor) |
+| 8082 | Application backend API (`/health`, `/api/...`, `/docs`) |
+
+## Backend API
+
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `GET /health` | none | DB, MQTT ingest and controller status |
+| `GET /api/devices` | none | Devices seen on the broker |
+| `GET /api/events` | none | Raw journal (filter by type / device) |
+| `GET /api/badge-events`, `/api/motion`, `/api/lock/state`, `/api/lock/commands`, `/api/stats` | none | Typed views |
+| `GET /api/badges` | none | Authorized badges |
+| `POST /api/lock/command` | Bearer `API_TOKEN` | Send `LOCK` / `UNLOCK` / `ALARM` / `ALARM_OFF` |
+| `POST /api/badges` | Bearer `API_TOKEN` | Add / update / deactivate a badge |
+
+Write endpoints fail closed (503) when `API_TOKEN` is empty. Automation rules:
+a trusted scan of an authorized badge sends `UNLOCK`; 3 denied scans within 60 s
+send `ALARM`. "Trusted" means well-formed, not retained and not claiming to come
+from a different device than the topic.
 
 ## Attack scenarios
 
@@ -143,8 +189,9 @@ the internal Compose broker and honeypot.
 - ESP32 firmware library: PubSubClient (Arduino)
 - MQTT broker: Eclipse Mosquitto 2 (Dockerized), username/password auth + ACLs
 - Public tunnel: bore (open-source, bore.pub relay)
-- Backend: planned, not implemented yet
-- Event storage: local SQLite used by the IDS/dashboard service
+- Backend: Python 3.12, FastAPI, psycopg 3 (pool), paho-mqtt
+- Application storage: PostgreSQL 16 (on an internal-only Docker network)
+- Security event storage: local SQLite used by the IDS/dashboard service
 - Detection: Python rule-based MQTT and log monitor using Paho MQTT
 - Honeypot: bounded fake TCP maintenance console; input is recorded, never
   executed
@@ -152,7 +199,7 @@ the internal Compose broker and honeypot.
 - Attacker tooling: Python/Paho scripts restricted to the Compose lab network
 - Host automation: PowerShell (user management, scenario runner, response
   watcher)
-- Testing: Python `unittest`
+- Testing: Python `unittest` (lab), `pytest` (backend)
 
 ## Known technical constraint
 
@@ -175,11 +222,14 @@ a credit/debit card for TCP tunnels).
 
 Each device's MQTT credentials (e.g. `badge1`) are scoped via ACLs to only
 publish on that device's own topic. Since a Wokwi project may be shared or
-public, device credentials are treated as low-privilege by design rather than
-secret — leaking one only allows fake events for that device.
+public, device credentials are low-privilege by design, **but not harmless**:
+the backend turns a scan of an authorized badge ID into an `UNLOCK`, so anyone
+holding the `badge1` credential who knows a valid badge ID (`B-102` is in the
+firmware and the schema seed) can open the door. This is a real weakness of the
+design and a candidate demo scenario (see Known issues).
 
-The security lab network is Docker-internal. The MQTT port and dashboard are
-published only on `127.0.0.1`; the attacker and honeypot ports are not
+The security lab network is Docker-internal. The MQTT port, dashboard and API
+are published only on `127.0.0.1`; the attacker and honeypot ports are not
 published to the host or internet. The command-injection exercise sends
 command-like text to a fake service that records it without invoking a shell.
 This is a teaching lab, not a production IDS or containment system.
@@ -208,14 +258,24 @@ extensions plus bore.
        Set-Content Broker\ids.password -NoNewline
    ```
 
-3. Create the dashboard token (the block button stays disabled without it):
+3. Create `.env` (dashboard token, database password, API token and the
+   `backend` / `controller` broker passwords; letters and digits only):
 
    ```powershell
-   "DASHBOARD_TOKEN=$([guid]::NewGuid().ToString('N'))$([guid]::NewGuid().ToString('N'))" |
-       Set-Content .env -Encoding ascii
+   $pw = @{}
+   Get-Content Broker\passwords.txt | ForEach-Object { $k, $v = $_ -split ':', 2; $pw[$k] = $v }
+   $g = { [guid]::NewGuid().ToString('N') }
+   @(
+       "DASHBOARD_TOKEN=$(& $g)$(& $g)",
+       "POSTGRES_PASSWORD=$(& $g)",
+       "API_TOKEN=$(& $g)$(& $g)",
+       "BACKEND_MQTT_PASSWORD=$($pw['backend'])",
+       "CONTROLLER_MQTT_PASSWORD=$($pw['controller'])"
+   ) | Set-Content .env -Encoding ascii
    ```
 
-4. Start the lab and open the dashboard at <http://127.0.0.1:8080>:
+4. Start the lab. The security dashboard is at <http://127.0.0.1:8081> and the
+   backend API at <http://127.0.0.1:8082/health>:
 
    ```powershell
    docker compose up -d --build
@@ -242,7 +302,8 @@ extensions plus bore.
    powershell -NoProfile -ExecutionPolicy Bypass -File .\Lab\response.ps1 -Action Unblock -User badge1
    ```
 
-7. Run the badge-controller firmware in Wokwi:
+7. Run a device firmware in Wokwi (example: the badge controller; the motion
+   sensor and lock actuator work the same way from their own folders):
 
    ```powershell
    bore local 1883 --to bore.pub            # note the public port it prints
@@ -252,13 +313,25 @@ extensions plus bore.
    ```
 
    Set `MQTT_PORT` and `MQTT_PASS` in `include/secrets.h`, build with
-   PlatformIO, then run **Wokwi: Start Simulator**. Open the
-   `esp32/badge-controller` folder itself in VS Code, not the repo root.
+   PlatformIO, then run **Wokwi: Start Simulator**. Open the device folder
+   itself in VS Code, not the repo root.
 
-Run the unit tests with:
+8. Without Wokwi, play the devices from the host (passwords come from the
+   environment, e.g. `$env:BADGE1_PASSWORD`):
+
+   ```powershell
+   python Backend\tools\simulate_devices.py lock                 # lock actuator, Ctrl+C to stop
+   python Backend\tools\simulate_devices.py badge --id B-102
+   python Backend\tools\simulate_devices.py badge --id EVIL-1 --count 3
+   python Backend\tools\simulate_devices.py motion --distance 40
+   ```
+
+Run the tests with:
 
 ```powershell
-docker compose run --rm --no-deps security-monitor python -m unittest -v
+docker compose run --rm --no-deps security-monitor python -m unittest -v   # lab
+cd Backend; pip install -r requirements-dev.txt; pytest                     # backend
+# backend integration tests also need: $env:TEST_DATABASE_URL = "postgresql://..."
 ```
 
 ## Status
@@ -269,9 +342,9 @@ docker compose run --rm --no-deps security-monitor python -m unittest -v
 - [x] Mosquitto added to `docker-compose.yml` + tested locally (pub/sub confirmed)
 - [x] Real MQTT authentication added (`passwordfile`, `allow_anonymous false`)
 - [x] Public tunnel set up (bore.pub) and externally tested with auth/ACLs
-- [x] First ESP32 (badge-controller) built and publishing to broker through bore
-- [ ] Remaining 2 ESP32 firmwares (motion-sensor, lock-actuator)
-- [ ] Backend event ingestion (Arij)
+- [x] Badge-controller firmware written; earlier plain-text version verified end to end through bore
+- [x] Motion-sensor and lock-actuator firmware written
+- [x] Backend: MQTT ingestion, PostgreSQL storage, REST API, badge/alarm automation, tests
 - [x] Attacker container with four bounded scenarios
 - [x] Detection rules (unauthorized MQTT, command-like honeypot input, sensor anomalies)
 - [x] Honeypot integrated into local event logging
@@ -279,8 +352,10 @@ docker compose run --rm --no-deps security-monitor python -m unittest -v
 - [x] Basic local dashboard (live event feed + alerts)
 - [x] Response action (operator-approved local account block)
 - [x] Controlled lab integration tests (attacks, detections, dashboard)
+- [ ] PlatformIO build + Wokwi run recorded for all three firmwares
+- [ ] Backend verified end to end with the real firmwares (badge → unlock → lock state)
 - [ ] Block action verified end to end (blocked account is actually denied)
-- [ ] Full end-to-end test with the remaining devices and the backend
+- [ ] Alerts from the security monitor visible in the backend (currently two separate stores)
 - [ ] Demo rehearsal
 - [ ] Report written
 
@@ -295,6 +370,14 @@ See `Notes.md` for the detailed build log.
 - Applying a block restarts the broker and disconnects every client.
 - Detection is rule-based; there is no anomaly or machine-learning component.
 - Tunnel traffic is unencrypted (see Known technical constraint).
+- **Badge replay:** a leaked `badge1` credential plus a valid badge ID opens the
+  door; badge scans have no replay or `seq` check (motion readings do).
+- **Unauthenticated reads:** `GET /api/*` endpoints (including `/api/badges`)
+  have no token, and the backend is reachable from the attacker container.
+- The IDS treats motion distance 1–1000 cm as normal while the backend treats
+  2–400 cm as plausible; the two should be aligned.
+- Security alerts (SQLite) and application events (PostgreSQL) live in separate
+  stores with separate dashboards.
 
 ## Team / Work Distribution
 
@@ -304,7 +387,7 @@ Completed:
 - Overall architecture and repository structure
 - Mosquitto broker configuration, per-device ACLs and real MQTT authentication
 - Public bore TCP tunnel, tested with authentication and ACLs
-- `badge-controller` ESP32 firmware, verified end to end through bore
+- `badge-controller` ESP32 firmware
 - Security lab: attacker scenarios, honeypot, detection rules, dashboard and
   operator-approved response action
 
@@ -314,17 +397,19 @@ Remaining:
 
 **Arij — IoT Device & Data Lead**
 
-- Implement the remaining two ESP32 firmwares (`motion-sensor`,
-  `lock-actuator`) and their MQTT integration
-- Device-side testing and integration
-- Backend MQTT event ingestion, database schema, and event storage/processing
-- Integration of all three ESP32 devices with the backend
+Completed (code written; end-to-end runs still to be recorded):
+- `motion-sensor` and `lock-actuator` ESP32 firmwares and their MQTT integration
+- Backend MQTT event ingestion, database schema, event storage and processing
+- Device simulator for testing without Wokwi
+
+Remaining:
+- Device-side testing and integration of all three ESP32 devices with the backend
 
 ## Timeline (6 weeks)
 
 - Week 1: repo + broker + first ESP32 connectivity — **done**
-- Week 2: all 3 ESP32 firmwares + backend ingesting events — **in progress
-  (badge-controller done)**
+- Week 2: all 3 ESP32 firmwares + backend ingesting events — **code written,
+  end-to-end verification pending**
 - Week 3: attacker container + recon attack + first detection rule + basic dashboard
 - Week 4: command-injection attack + honeypot
 - Week 5: sensor-spoofing scenario + anomaly rule + lateral-movement correlation
