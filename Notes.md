@@ -564,6 +564,29 @@ No PlatformIO build, Wokwi run or full end-to-end run (badge -> backend ->
 | Attacker_Invalid_MQTT_Credentials_Blocked | Wrong password rejected: not authorised |
 | Attacker_Unauthorized_MQTT_Access_Blocked | Anonymous connection rejected: not authorised |
 | Attacker_Dashboard_Alerts | Security-monitor dashboard with alerts from the scenarios |
+| Baseline_Step1 | `docker compose config --quiet` passes (pre-start) |
+| Baseline_Step5 | Six default services listed (pre-start) |
+| Baseline_Step3 | `docker ps -a` before startup; old `iot-merge` containers hold port 1883 |
+| Baseline_Step4 | `docker compose ps -a` before startup |
+| Baseline_Step25 | Host port 1883 already listening |
+| Baseline_Step8 | Compose file as inspected before startup |
+| Baseline_Step6 | Compose config exit code 0 |
+| Baseline_Step70 | Backend read endpoints on port 8082 |
+| Baseline_Step71 | Dashboard proxy returns HTTP 200 |
+| Baseline_Step89 | Dashboard reachable (repeat check) |
+| Baseline_Step72 | Monitor endpoints return HTTP 200 |
+| Baseline_Step91 | `/api/alerts` returns a JSON array |
+| Baseline_Step92 | `/api/responses` returns a JSON array |
+| Baseline_Step73 | Unauthenticated `POST /api/respond` rejected (401) |
+| Baseline_Step75 | Invalid token on `POST /api/lock/command` rejected (401) |
+| Baseline_Step76 | Invalid token on `POST /api/badges` rejected (401) |
+| Baseline_Step90 | Invalid token through the dashboard proxy rejected (401) |
+| Baseline_Step77 | Invalid MQTT credentials rejected |
+| Baseline_Step79 | Valid `backend` MQTT authentication |
+| Baseline_Step80 | `backend` publish to `lock1/command` denied |
+| Baseline_Step81 | `controller` publish to `lock1/auth-test` (denied in broker log) |
+| Baseline_Step88 | Broker audit log with `Denied PUBLISH` entries |
+| Baseline_Step86 | Controller ACL rule in `acl.conf` |
 ---
 ## Initial Pre-Start Inspection — 2026-10-19
 
@@ -577,6 +600,25 @@ This subsection records the initial inspection before the project services were 
 - The older `iot-merge` project owned container `iot-mqtt-broker` and host port `127.0.0.1:1883`.
 - Ports 8081 and 8082 were not listening at the time of inspection.
 - Seven baseline screenshot files were reported as untracked at the time.
+
+![Compose config check](screenshots/Baseline_Step1_Compose_Config_Valid.png)
+*`docker compose config --quiet` completes without errors*
+
+![Configured services](screenshots/Baseline_Step5_Configured_Services.png)
+*`docker compose config --services` lists the six default services*
+
+![All containers before startup](screenshots/Baseline_Step3_All_Containers.png)
+*`docker ps -a` before startup: the older `iot-merge` containers are still running and hold `127.0.0.1:1883`; this project's `postgres` and `honeypot` are only `Created`*
+
+![Compose containers before startup](screenshots/Baseline_Step4_Compose_All_Containers.png)
+*`docker compose ps -a`: nothing from this project is running yet*
+
+![MQTT port check](screenshots/Baseline_Step25_MQTT_Port_Check.png)
+*Host port 1883 is already listening (owned by the older `iot-merge` broker)*
+
+![Compose file at inspection time](screenshots/Baseline_Step8_Compose_File.png)
+*`docker-compose.yml` as inspected at that time (broker published on `127.0.0.1:1883`)*
+
 
 The initial inspection did not confirm successful startup or end-to-end operation. The later baseline section records the subsequent checks.
 
@@ -592,6 +634,10 @@ This section records the later runtime and security checks performed on the IoT 
 - The six default services were started: MQTT broker, PostgreSQL, backend, honeypot, security monitor, and dashboard proxy.
 - PostgreSQL reported a healthy status.
 
+![Compose config exit code](screenshots/Baseline_Step6_Config_Validation.png)
+*`docker compose config --quiet` followed by `$LASTEXITCODE` = `0`*
+
+
 ### 2. Backend health and API endpoints
 
 **Result: PASS for the tested checks**
@@ -600,6 +646,10 @@ This section records the later runtime and security checks performed on the IoT 
 - Database connectivity, MQTT ingestion, and MQTT controller connectivity were reported as `True`.
 - The rate-limit counter was zero.
 - The following read endpoints responded successfully: `/api/devices`, `/api/events`, `/api/badge-events`, `/api/motion`, `/api/lock/state`, `/api/lock/commands`, `/api/badges`, and `/api/stats`.
+
+![Backend read endpoints](screenshots/Baseline_Step70_Backend_Read_Endpoints.png)
+*All eight backend read endpoints on port 8082 respond (`PASS`)*
+
 
 ### 3. Dashboard and security-monitor endpoints
 
@@ -610,6 +660,22 @@ This section records the later runtime and security checks performed on the IoT 
 - `/api/alerts` and `/api/responses` returned valid JSON arrays.
 
 These checks establish endpoint availability and response format, not complete detection or response-action functionality.
+
+![Dashboard proxy reachable](screenshots/Baseline_Step71_Dashboard_Proxy.png)
+*Dashboard on `127.0.0.1:8081`: HTTP 200, `text/html`, HTML received*
+
+![Dashboard reachable (repeat check)](screenshots/Baseline_Step89_Dashboard_Reachable.png)
+*Repeat check: dashboard returns HTTP 200 with content*
+
+![Monitor endpoints](screenshots/Baseline_Step72_Monitor_Endpoints.png)
+*`/api/events`, `/api/alerts` and `/api/responses` all return HTTP 200*
+
+![Alerts endpoint](screenshots/Baseline_Step91_Alerts_Endpoint.png)
+*`/api/alerts` returns a valid JSON array*
+
+![Responses endpoint](screenshots/Baseline_Step92_Responses_Endpoint.png)
+*`/api/responses` returns a valid JSON array*
+
 
 ### 4. API authentication
 
@@ -622,6 +688,19 @@ The following requests were rejected with HTTP 401:
 - `POST /api/badges` with an invalid token.
 - Dashboard-proxied `POST /api/respond` with an invalid token.
 
+![Unauthenticated respond rejected](screenshots/Baseline_Step73_Unauthorized_Response_Rejected.png)
+*Unauthenticated `POST /api/respond`: HTTP 401*
+
+![Invalid token on lock command](screenshots/Baseline_Step75_Invalid_API_Token_Rejected.png)
+*`POST /api/lock/command` with an invalid token: HTTP 401*
+
+![Invalid token on badge write](screenshots/Baseline_Step76_Unauthorized_Badge_Write_Rejected.png)
+*`POST /api/badges` with an invalid token: HTTP 401*
+
+![Invalid token through the dashboard proxy](screenshots/Baseline_Step90_Dashboard_Invalid_Token_Rejected.png)
+*`POST /api/respond` through the dashboard proxy with an invalid token: HTTP 401*
+
+
 ### 5. MQTT authentication
 
 **Result: PASS for the tested authentication cases**
@@ -629,6 +708,13 @@ The following requests were rejected with HTTP 401:
 - Invalid MQTT credentials were rejected with `Connection Refused: not authorised`.
 - Valid backend credentials received a successful CONNACK and SUBACK when subscribing to an authorized topic.
 - The subscriber timed out while waiting for a message because none was published during the test; this was expected.
+
+![Invalid MQTT credentials](screenshots/Baseline_Step77_Invalid_MQTT_Credentials_Rejected.png)
+*Invalid username/password: `Connection Refused: not authorised`*
+
+![Valid backend MQTT authentication](screenshots/Baseline_Step79_Valid_Backend_MQTT_Authentication.png)
+*Valid `backend` credentials: CONNACK 0 and SUBACK; the `Timed out` line is expected because nothing was published*
+
 
 ### 6. MQTT access control and audit logging
 
@@ -638,7 +724,21 @@ The following requests were rejected with HTTP 401:
 - The controller's publish attempt to `facility/lock1/auth-test` was denied because the configured controller permission is limited to `facility/lock1/cmd`.
 - The broker audit log contained `Denied PUBLISH` entries for the rejected operations.
 
+![Backend lock publish denied](screenshots/Baseline_Step80_Backend_Lock_Publish_Denied.png)
+*Broker log: the `backend` account's publish to `facility/lock1/command` is `Denied PUBLISH`*
+
+![Controller publish to a non-permitted topic](screenshots/Baseline_Step81_Controller_MQTT_Publish.png)
+*`controller` publishes to `facility/lock1/auth-test`; the client shows no error (MQTT QoS 0), and the denial appears in the broker audit log below*
+
+![Broker audit log denials](screenshots/Baseline_Step88_Broker_Audit_Log_Denials.png)
+*`mosquitto.log` contains `Denied PUBLISH` for `facility/lock1/command` and `facility/lock1/auth-test`*
+
+
 **Limitation:** An authorized publish to `facility/lock1/cmd` was not performed because it can trigger simulated lock or alarm actions. The controller ACL rule was inspected, but the authorized command path has not been validated end to end.
+
+![Controller ACL rule](screenshots/Baseline_Step86_Controller_Command_ACL_Rule.png)
+*`Broker/acl.conf`: `user controller` may write only `facility/lock1/cmd` (rule inspected, authorized publish not exercised)*
+
 
 ### 7. Honeypot availability
 
