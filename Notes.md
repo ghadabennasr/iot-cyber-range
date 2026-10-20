@@ -485,7 +485,7 @@ output; the denial is shown by the broker log and by the dashboard alert.
 
 ---
 
-## Step 14: Backend, remaining firmwares and review (paste after Step 13)
+## Step 14: Backend, remaining firmwares and review 
 
 **What was found in the repo:**
 - `Backend/` (FastAPI + PostgreSQL) now exists: `ingest.py` (pure parsing and
